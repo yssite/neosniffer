@@ -3,7 +3,7 @@
 **English** | [中文](README_CN.md)
 
 A native Win32 C++20 single-executable disk space analyzer: Per-Monitor V2 high DPI, dark mode,
-direct NTFS `\` scanning, and a built-in read-only MCP server for AI agents.
+direct NTFS `$MFT` scanning, and a built-in read-only MCP server for AI agents.
 
 ![NeoSniffer](docs/screenshot.webp)
 
@@ -14,7 +14,7 @@ direct NTFS `\` scanning, and a built-in read-only MCP server for AI agents.
 | **Under 2 MB, zero dependencies** | The whole app is a **single ~1.7 MB exe** - statically linked, no installer, no runtime, no third-party DLLs. Only Windows system DLLs are used. |
 | High DPI | Per-Monitor V2, layout recalculated per paint |
 | Dark / light theme | Custom-drawn menu bar, popups, tooltips, dialogs |
-| NTFS `\` direct read | Reads the MFT run list directly; needs admin, falls back to a parallel directory walk automatically |
+| NTFS `$MFT` direct read | Reads the MFT run list directly; needs admin, falls back to a parallel directory walk automatically |
 | Nested treemap | Container header bands, per-level insets, tiered labels, 180 ms zoom animation |
 | Filter DSL | e.g. `*.iso;>1gb;>2weeks;:red` |
 | Export | Template DSL (`{script}`, `if X ? {a} : {b}`, `leftpad/rightpad`) |

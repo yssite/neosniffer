@@ -3,7 +3,7 @@
 [English](README.md) | **中文**
 
 原生 Win32 / C++20 单文件磁盘空间分析工具：Per-Monitor V2 高 DPI、深色模式、
-NTFS `\` 直读，并内置面向 AI Agent 的只读 MCP 服务。
+NTFS `$MFT` 直读，并内置面向 AI Agent 的只读 MCP 服务。
 
 ![NeoSniffer](docs/screenshot.webp)
 
@@ -14,7 +14,7 @@ NTFS `\` 直读，并内置面向 AI Agent 的只读 MCP 服务。
 | **不到 2 MB，零第三方依赖** | 整个程序就是**一个约 1.7 MB 的 exe**：静态链接、免安装、无运行库、无第三方 DLL，只调用 Windows 系统 DLL。 |
 | 高 DPI | Per-Monitor V2，每次绘制按当前客户区重算布局 |
 | 深色 / 浅色 | 菜单栏、弹出菜单、提示卡片、对话框全部自绘 |
-| NTFS `\` 直读 | 直接解析 MFT run list；需管理员，失败自动回退到并行目录枚举 |
+| NTFS `$MFT` 直读 | 直接解析 MFT run list；需管理员，失败自动回退到并行目录枚举 |
 | 嵌套树图 | 容器标题带、逐层内缩、分档标签、180 ms 缩放动画 |
 | 过滤器 DSL | 例如 `*.iso;>1gb;>2weeks;:red` |
 | 导出 | 模板 DSL（`{script}`、`if X ? {a} : {b}`、`leftpad/rightpad`） |
