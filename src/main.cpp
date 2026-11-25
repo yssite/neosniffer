@@ -1,4 +1,4 @@
-// SpaceSniffer 2.0 — native Win32 UI (main window, tabs, toolbar, treemap view, dialogs).
+// NeoSniffer — native Win32 UI (main window, tabs, toolbar, treemap view, dialogs).
 #include "core.h"
 #include "ui_treemap.h"
 #include "ui_config.h"
@@ -26,10 +26,14 @@
 using namespace ss;
 
 // ---------------------------------------------------------------- constants
-static const wchar_t* kMainClass = L"SSMainWindow";
-static const wchar_t* kViewClass = L"SSViewWindow";
-static const wchar_t* kStartClass = L"SSStartWindow";
-static const wchar_t* kPopupMenuClass = L"SSPopupMenu";
+static const wchar_t* kMainClass = L"NeoSnifferMainWindow";
+static const wchar_t* kViewClass = L"NeoSnifferViewWindow";
+static const wchar_t* kStartClass = L"NeoSnifferStartWindow";
+static const wchar_t* kPopupMenuClass = L"NeoSnifferPopupMenu";
+static const wchar_t* kMenuBarClass = L"NeoSnifferMenuBar";
+static const wchar_t* kLogClass = L"NeoSnifferLogWindow";
+static const wchar_t* kHelpClass = L"NeoSnifferHelpWindow";
+static const wchar_t* kAboutClass = L"NeoSnifferAboutWindow";
 static const wchar_t* AppTitle() { return ss::i18n::T(L"app.title"); }
 static bool g_isElevated = false;
 
@@ -596,7 +600,7 @@ static void DrawView(ViewState* v, HDC target, const RECT& rc)
         TextAt(mem, crumb, RECT{ S(10), cy, right, cy + S(20) }, g_pal.textDim, g_fontSmall);
     }
 
-    // ---- treemap canvas (module: native/src/ui_treemap.cpp)
+    // ---- treemap canvas (module: src/ui_treemap.cpp)
     int canvasTop = v->filterVisible ? S(64) : S(30);
     {
         ss::ui::TreemapStyle st;
@@ -2171,7 +2175,7 @@ static LRESULT CALLBACK LogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 static void ShowLogWindow(HWND owner)
 {
     if (g_log) { ShowWindow(g_log, SW_SHOW); SetForegroundWindow(g_log); return; }
-    g_log = CreateWindowExW(WS_EX_TOOLWINDOW, L"SSLogWindow", ss::i18n::T(L"log.title"),
+    g_log = CreateWindowExW(WS_EX_TOOLWINDOW, kLogClass, ss::i18n::T(L"log.title"),
                             WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, S(900), S(420),
                             owner, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (g_log) ApplyDwmChrome(g_log);
@@ -2291,9 +2295,9 @@ static bool RelaunchElevated(HWND owner, DWORD* outErr)
 namespace ss::ui {
 
 static constexpr const wchar_t* kShellRegBases[] = {
-    L"Software\\Classes\\Directory\\shell\\SpaceSnifferNeo",
-    L"Software\\Classes\\Directory\\Background\\shell\\SpaceSnifferNeo",
-    L"Software\\Classes\\Drive\\shell\\SpaceSnifferNeo",
+    L"Software\\Classes\\Directory\\shell\\NeoSniffer",
+    L"Software\\Classes\\Directory\\Background\\shell\\NeoSniffer",
+    L"Software\\Classes\\Drive\\shell\\NeoSniffer",
 };
 
 static ShellIntegrationStatus g_shellStatus{};
@@ -3229,7 +3233,7 @@ static void ShowHelpDlg(HWND owner, int which)
     using ss::i18n::T;
     const wchar_t* body = which == 0 ? T(L"help.filter.body") : which == 1 ? T(L"help.tag.body") : T(L"help.cli.body");
     const wchar_t* title = which == 0 ? T(L"help.filter.title") : which == 1 ? T(L"help.tag.title") : T(L"help.cli.title");
-    HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, L"SSHelpWindow", title, WS_OVERLAPPEDWINDOW,
+    HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, kHelpClass, title, WS_OVERLAPPEDWINDOW,
                              CW_USEDEFAULT, CW_USEDEFAULT, S(820), S(640), owner, nullptr,
                              GetModuleHandleW(nullptr), (LPVOID)body);
     if (h)
@@ -3239,10 +3243,258 @@ static void ShowHelpDlg(HWND owner, int which)
     }
 }
 
+struct AboutState
+{
+    HWND hwnd = nullptr;
+    RECT linkRect{};
+    RECT okRect{};
+    bool linkHover = false;
+    bool okHover = false;
+    bool trackingMouse = false;
+    bool closed = false;
+};
+
+static void PaintAboutDlg(HWND hwnd, AboutState& st)
+{
+    using ss::i18n::T;
+    PAINTSTRUCT ps{};
+    HDC target = BeginPaint(hwnd, &ps);
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    if (rc.right <= 0 || rc.bottom <= 0)
+    {
+        EndPaint(hwnd, &ps);
+        return;
+    }
+
+    HDC dc = CreateCompatibleDC(target);
+    HBITMAP bmp = CreateCompatibleBitmap(target, rc.right, rc.bottom);
+    if (!dc || !bmp)
+    {
+        if (bmp) DeleteObject(bmp);
+        if (dc) DeleteDC(dc);
+        EndPaint(hwnd, &ps);
+        return;
+    }
+    HGDIOBJ oldBmp = SelectObject(dc, bmp);
+
+    Fill(dc, rc, g_pal.bg);
+
+    int padX = S(22);
+    int footerH = S(48);
+    RECT footer{ 0, rc.bottom - footerH, rc.right, rc.bottom };
+    Fill(dc, footer, g_pal.panel);
+    Fill(dc, RECT{ 0, footer.top - 1, rc.right, footer.top }, g_pal.border);
+
+    // Header: product name + license / version line
+    RECT headRc{ padX, S(18), rc.right - padX, S(40) };
+    TextAt(dc, T(L"about.heading"), headRc, g_pal.text, g_fontUIBold, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    RECT licRc{ padX, S(40), rc.right - padX, S(58) };
+    TextAt(dc, T(L"about.license"), licRc, g_pal.textDim, g_fontSmall, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    Fill(dc, RECT{ padX, S(66), rc.right - padX, S(67) }, g_pal.border);
+
+    // Body text
+    RECT bodyRc{ padX, S(78), rc.right - padX, footer.top - S(42) };
+    TextAt(dc, T(L"about.body"), bodyRc, g_pal.text, g_fontUI, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+
+    // Clickable repository link row
+    const wchar_t* repoLabel = T(L"about.repo_label");
+    const wchar_t* repoUrl = T(L"about.repo_url");
+    int linkY = footer.top - S(34);
+    int linkH = S(22);
+    SIZE lblSz{}, urlSz{};
+    {
+        HGDIOBJ oldF = SelectObject(dc, g_fontUI);
+        GetTextExtentPoint32W(dc, repoLabel, (int)wcslen(repoLabel), &lblSz);
+        GetTextExtentPoint32W(dc, repoUrl, (int)wcslen(repoUrl), &urlSz);
+        SelectObject(dc, oldF);
+    }
+    RECT lblRc{ padX, linkY, padX + lblSz.cx, linkY + linkH };
+    TextAt(dc, repoLabel, lblRc, g_pal.textDim, g_fontUI, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    int urlX = lblRc.right;
+    int urlR = std::min((int)(rc.right - padX), urlX + (int)urlSz.cx);
+    st.linkRect = RECT{ urlX, linkY, urlR, linkY + linkH };
+    COLORREF linkCol = st.linkHover
+        ? (g_pal.dark ? RGB(0x74, 0xB4, 0xFF) : RGB(0x0D, 0x4F, 0xB8))
+        : g_pal.accent;
+    TextAt(dc, repoUrl, st.linkRect, linkCol, g_fontUI, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    // 1px underline below the URL text so clickability is obvious
+    int ulY = st.linkRect.bottom - S(3);
+    Fill(dc, RECT{ st.linkRect.left, ulY, st.linkRect.right, ulY + 1 }, linkCol);
+
+    // Footer OK button
+    int btnW = S(84);
+    int btnH = S(26);
+    int btnY = footer.top + (footerH - btnH) / 2;
+    st.okRect = RECT{ rc.right - padX - btnW, btnY, rc.right - padX, btnY + btnH };
+    COLORREF okBg = st.okHover
+        ? (g_pal.dark ? RGB(0x66, 0xAA, 0xFF) : RGB(0x17, 0x5C, 0xC7))
+        : g_pal.accent;
+    Fill(dc, st.okRect, okBg);
+    Frame(dc, st.okRect, st.okHover ? g_pal.text : g_pal.accent);
+    TextAt(dc, T(L"about.ok"), st.okRect, RGB(255, 255, 255), g_fontUI, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    BitBlt(target, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(dc);
+    EndPaint(hwnd, &ps);
+}
+
+static LRESULT CALLBACK AboutProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_NCCREATE)
+    {
+        auto* cs = (CREATESTRUCTW*)lp;
+        if (!cs || !cs->lpCreateParams) return FALSE;
+        auto* st = (AboutState*)cs->lpCreateParams;
+        st->hwnd = hwnd;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)st);
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+    auto* st = (AboutState*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    if (!st) return DefWindowProcW(hwnd, msg, wp, lp);
+
+    switch (msg)
+    {
+        case WM_ERASEBKGND: return 1;
+        case WM_PAINT:
+            PaintAboutDlg(hwnd, *st);
+            return 0;
+        case WM_MOUSEMOVE:
+        {
+            if (!st->trackingMouse)
+            {
+                TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, hwnd, 0 };
+                TrackMouseEvent(&tme);
+                st->trackingMouse = true;
+            }
+            POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+            bool overLink = PtInRect(&st->linkRect, pt) != 0;
+            bool overOk = PtInRect(&st->okRect, pt) != 0;
+            if (overLink != st->linkHover || overOk != st->okHover)
+            {
+                st->linkHover = overLink;
+                st->okHover = overOk;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_MOUSELEAVE:
+            st->trackingMouse = false;
+            if (st->linkHover || st->okHover)
+            {
+                st->linkHover = false;
+                st->okHover = false;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        case WM_SETCURSOR:
+            if (LOWORD(lp) == HTCLIENT)
+            {
+                POINT pt{};
+                GetCursorPos(&pt);
+                ScreenToClient(hwnd, &pt);
+                if (PtInRect(&st->linkRect, pt) || PtInRect(&st->okRect, pt))
+                {
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+            }
+            break;
+        case WM_LBUTTONUP:
+        {
+            POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+            if (PtInRect(&st->linkRect, pt))
+            {
+                const wchar_t* url = ss::i18n::T(L"about.repo_url");
+                ShellExecuteW(hwnd, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+                return 0;
+            }
+            if (PtInRect(&st->okRect, pt))
+            {
+                st->closed = true;
+                return 0;
+            }
+            return 0;
+        }
+        case WM_CLOSE:
+            st->closed = true;
+            return 0;
+        case WM_NCDESTROY:
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            st->hwnd = nullptr;
+            st->closed = true;
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
 static void ShowAboutDlg(HWND owner)
 {
     using ss::i18n::T;
-    MessageBoxW(owner, T(L"about.body"), T(L"about.title"), MB_OK | MB_ICONINFORMATION);
+    AboutState st{};
+    const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+    const DWORD exStyle = WS_EX_DLGMODALFRAME;
+    RECT wr{ 0, 0, S(560), S(304) };
+    AdjustWindowRectEx(&wr, style, FALSE, exStyle);
+    int winW = wr.right - wr.left;
+    int winH = wr.bottom - wr.top;
+
+    RECT work{ 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    HMONITOR mon = MonitorFromWindow(owner ? owner : GetDesktopWindow(), MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{ sizeof(mi) };
+    if (GetMonitorInfoW(mon, &mi)) work = mi.rcWork;
+    RECT anchor = work;
+    if (owner && IsWindow(owner)) GetWindowRect(owner, &anchor);
+    int x = std::clamp((int)(anchor.left + ((anchor.right - anchor.left) - winW) / 2),
+                       (int)work.left, std::max((int)work.left, (int)work.right - winW));
+    int y = std::clamp((int)(anchor.top + ((anchor.bottom - anchor.top) - winH) / 2),
+                       (int)work.top, std::max((int)work.top, (int)work.bottom - winH));
+
+    bool hasOwner = (owner != nullptr && IsWindow(owner));
+    bool ownerWasEnabled = hasOwner && (IsWindowEnabled(owner) != FALSE);
+    if (ownerWasEnabled) EnableWindow(owner, FALSE);
+
+    HWND dlg = CreateWindowExW(exStyle, kAboutClass, T(L"about.title"), style,
+                               x, y, winW, winH, owner, nullptr,
+                               GetModuleHandleW(nullptr), &st);
+    if (!dlg)
+    {
+        if (ownerWasEnabled && IsWindow(owner)) EnableWindow(owner, TRUE);
+        return;
+    }
+
+    ApplyDwmChrome(dlg);
+    ShowWindow(dlg, SW_SHOW);
+    UpdateWindow(dlg);
+    SetFocus(dlg);
+
+    MSG msg{};
+    bool gotQuit = false;
+    WPARAM quitCode = 0;
+    while (!st.closed)
+    {
+        BOOL r = GetMessageW(&msg, nullptr, 0, 0);
+        if (r == 0) { gotQuit = true; quitCode = msg.wParam; break; }
+        if (r < 0) break;
+        if (msg.hwnd == dlg && msg.message == WM_KEYDOWN &&
+            (msg.wParam == VK_ESCAPE || msg.wParam == VK_RETURN || msg.wParam == VK_SPACE))
+        {
+            st.closed = true;
+            continue;
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    if (ownerWasEnabled && IsWindow(owner)) EnableWindow(owner, TRUE);
+    if (IsWindow(dlg)) DestroyWindow(dlg);
+    if (hasOwner && IsWindow(owner)) SetActiveWindow(owner);
+    if (gotQuit) PostQuitMessage((int)quitCode);
 }
 
 static void ShowExportDlg(HWND owner)
@@ -3346,9 +3598,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int show)
     std::wstring exeDir = (exeLen > 0 && exeLen < exeBuf.size()) ? exeBuf.substr(0, exeLen) : L"";
     size_t slash = exeDir.find_last_of(L'\\');
     if (slash != std::wstring::npos) exeDir = exeDir.substr(0, slash);
-    g_cfg.path = exeDir.empty() ? L"SpaceSnifferConfig.xml" : (exeDir + L"\\SpaceSnifferConfig.xml");
-    g_cfg.Load(g_cfg.path);
-    // first run: persist defaults
+    std::wstring newCfgPath = exeDir.empty() ? L"NeoSnifferConfig.xml" : (exeDir + L"\\NeoSnifferConfig.xml");
+    std::wstring legacyCfgPath = exeDir.empty() ? L"SpaceSnifferConfig.xml" : (exeDir + L"\\SpaceSnifferConfig.xml");
+    if (!g_cfg.Load(newCfgPath))
+    {
+        g_cfg.Load(legacyCfgPath);
+        g_cfg.path = newCfgPath;
+    }
+    // first run (or migrated from legacy config): persist to NeoSnifferConfig.xml
     if (GetFileAttributesW(g_cfg.path.c_str()) == INVALID_FILE_ATTRIBUTES) g_cfg.Save();
 
     g_isElevated = IsProcessElevated();
@@ -3401,7 +3658,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int show)
     RegisterClassExW(&wc);
 
     wc.lpfnWndProc = MenuBarProc;
-    wc.lpszClassName = L"SSMenuBar";
+    wc.lpszClassName = kMenuBarClass;
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.hbrBackground = nullptr;
     RegisterClassExW(&wc);
@@ -3415,12 +3672,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int show)
     wc.hIcon = hIconBig;
     wc.hIconSm = hIconSm;
     wc.lpfnWndProc = LogProc;
-    wc.lpszClassName = L"SSLogWindow";
+    wc.lpszClassName = kLogClass;
     wc.style = CS_HREDRAW | CS_VREDRAW;
     RegisterClassExW(&wc);
 
     wc.lpfnWndProc = HelpProc;
-    wc.lpszClassName = L"SSHelpWindow";
+    wc.lpszClassName = kHelpClass;
+    RegisterClassExW(&wc);
+
+    wc.lpfnWndProc = AboutProc;
+    wc.lpszClassName = kAboutClass;
     RegisterClassExW(&wc);
 
     RECT work{};
@@ -3451,7 +3712,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int show)
         g_lastClientH = crc.bottom;
     }
 
-    g_menuBar = CreateWindowExW(0, L"SSMenuBar", L"", WS_CHILD | WS_VISIBLE,
+    g_menuBar = CreateWindowExW(0, kMenuBarClass, L"", WS_CHILD | WS_VISIBLE,
                                 0, 0, 100, 30, main, nullptr, inst, nullptr);
 
     // start page

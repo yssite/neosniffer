@@ -2,10 +2,16 @@
 out/
 dist/
 *.o
+*.obj
 *.res
 *.exe
 *.pdb
 work/
+
 # dev scratch
 _*.py
 *.patch
+
+# local user config
+NeoSnifferConfig.xml
+SpaceSnifferConfig.xml

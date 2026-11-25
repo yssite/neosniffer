@@ -23,14 +23,14 @@ Lang g_lang = Lang::Zh;
 
 constexpr Entry kTable[] = {
     // ---- window & dialog titles ----
-    { L"app.title",          L"SpaceSniffer Neo 1.0.0",            L"SpaceSniffer Neo 1.0.0" },
-    { L"log.title",          L"SpaceSniffer 日志",                 L"SpaceSniffer Log" },
-    { L"cfg.window_title",   L"设置 - SpaceSniffer Neo",           L"Settings - SpaceSniffer Neo" },
+    { L"app.title",          L"NeoSniffer 1.0.0",                  L"NeoSniffer 1.0.0" },
+    { L"log.title",          L"NeoSniffer 日志",                   L"NeoSniffer Log" },
+    { L"cfg.window_title",   L"设置 - NeoSniffer",                 L"Settings - NeoSniffer" },
     { L"help.filter.title",  L"过滤器帮助",                        L"Filter Help" },
     { L"help.tag.title",     L"标签帮助",                          L"Tag Help" },
     { L"help.cli.title",     L"命令行帮助",                        L"Command Line Help" },
-    { L"about.title",        L"关于 SpaceSniffer Neo",             L"About SpaceSniffer Neo" },
-    { L"export.title",       L"SpaceSniffer 导出",                 L"SpaceSniffer Export" },
+    { L"about.title",        L"关于 NeoSniffer",                   L"About NeoSniffer" },
+    { L"export.title",       L"NeoSniffer 导出",                   L"NeoSniffer Export" },
 
     // ---- menu bar ----
     { L"menu.file",          L"文件",                              L"File" },
@@ -134,7 +134,7 @@ constexpr Entry kTable[] = {
     { L"status.disk_usage",  L"磁盘占用 ",                         L"Disk Usage " },
 
     // ---- log messages ----
-    { L"log.started",            L"SpaceSniffer Neo 已启动",       L"SpaceSniffer Neo started" },
+    { L"log.started",            L"NeoSniffer 已启动",             L"NeoSniffer started" },
     { L"log.opened",             L"日志窗口已打开",                L"Log window opened" },
     { L"log.cfg_saved",          L"配置已保存到 ",                 L"Settings saved to " },
     { L"log.scan_start",         L"开始扫描: ",                    L"Scan started: " },
@@ -158,10 +158,10 @@ constexpr Entry kTable[] = {
     { L"log.shell_reg_failed",   L"资源管理器右键菜单操作失败 (错误码 ", L"Explorer context menu operation failed (error " },
     { L"log.runas_cancelled",    L"已取消以管理员身份重启，继续以当前权限运行", L"Administrator restart cancelled; continuing with current privileges" },
     { L"log.runas_failed",       L"以管理员身份重启失败 (错误码 ",  L"Failed to restart as administrator (error " },
-    { L"shell.menu_label",       L"使用 SpaceSniffer Neo 分析占用", L"Analyze with SpaceSniffer Neo" },
+    { L"shell.menu_label",       L"使用 NeoSniffer 分析占用",      L"Analyze with NeoSniffer" },
 
     // ---- file dialogs & export messages ----
-    { L"dlg.snap_filter_ssx",    L"SpaceSniffer 快照 (*.ssx)",     L"SpaceSniffer Snapshot (*.ssx)" },
+    { L"dlg.snap_filter_ssx",    L"NeoSniffer 快照 (*.ssx)",       L"NeoSniffer Snapshot (*.ssx)" },
     { L"dlg.snap_filter_du",     L"DU 文本 (*.du)",                L"DU Text (*.du)" },
     { L"dlg.export_filter_txt",  L"文本 (*.txt)",                  L"Text (*.txt)" },
     { L"dlg.export_filter_csv",  L"CSV (*.csv)",                   L"CSV (*.csv)" },
@@ -266,7 +266,7 @@ constexpr Entry kTable[] = {
     // ---- help & about text bodies ----
     {
         L"help.filter.body",
-        L"SpaceSniffer 过滤器语法（与原版 1.3.0.2 一致）\r\n\r\n"
+        L"NeoSniffer 过滤器语法（兼容原版 SpaceSniffer 1.3.0.2）\r\n\r\n"
         L"多个条件用分号分隔，条件之间是“与”关系；条件前加 | 表示取反。\r\n\r\n"
         L"按文件名      *.jpg            通配符 ?  *\r\n"
         L"按大小        >100kb  s>1mb  d<16k\r\n"
@@ -285,7 +285,7 @@ constexpr Entry kTable[] = {
         L"  :attr:a+h-s\r\n\r\n"
         L"标签快捷键：Ctrl+1/2/3/4 红/黄/绿/蓝，Ctrl+0 清除，子元素继承父标签（继承色不渲染）\r\n",
 
-        L"SpaceSniffer Filter Syntax (compatible with 1.3.0.2)\r\n\r\n"
+        L"NeoSniffer Filter Syntax (compatible with SpaceSniffer 1.3.0.2)\r\n\r\n"
         L"Separate multiple conditions with semicolons (AND); prefix a condition with | to negate.\r\n\r\n"
         L"By filename    *.jpg            wildcards ?  *\r\n"
         L"By size        >100kb  s>1mb  d<16k\r\n"
@@ -325,42 +325,43 @@ constexpr Entry kTable[] = {
     {
         L"help.cli.body",
         L"命令行\r\n\r\n"
-        L"  SpaceSniffer.exe scan \"<path>\"                打开扫描视图\r\n"
-        L"  SpaceSniffer.exe load \"<file>\"                打开快照（.ssx/.sns/.du）\r\n"
-        L"  SpaceSniffer.exe filter \"<filter>\"            对前一个 scan/load 应用过滤\r\n"
-        L"  SpaceSniffer.exe export \"<name>\" \"<path>\"     导出（配置名区分大小写）\r\n"
-        L"  SpaceSniffer.exe autoclose                     导出后自动退出\r\n"
-        L"  SpaceSniffer.exe help                          本帮助\r\n\r\n"
+        L"  NeoSniffer.exe scan \"<path>\"                打开扫描视图\r\n"
+        L"  NeoSniffer.exe load \"<file>\"                打开快照（.ssx/.sns/.du）\r\n"
+        L"  NeoSniffer.exe filter \"<filter>\"            对前一个 scan/load 应用过滤\r\n"
+        L"  NeoSniffer.exe export \"<name>\" \"<path>\"     导出（配置名区分大小写）\r\n"
+        L"  NeoSniffer.exe autoclose                     导出后自动退出\r\n"
+        L"  NeoSniffer.exe help                          本帮助\r\n\r\n"
         L"快捷：Ctrl+N 新建 · Backspace 后退 · Shift+Backspace 前进 · Ctrl+Home 根\r\n"
         L"      Ctrl+Up 上一层 · Ctrl+/- 细节 · Ctrl+F 剩余 · Ctrl+U 未知 · Ctrl+T 文件类\r\n",
 
         L"Command Line\r\n\r\n"
-        L"  SpaceSniffer.exe scan \"<path>\"                Open a scan view\r\n"
-        L"  SpaceSniffer.exe load \"<file>\"                Open a snapshot (.ssx/.sns/.du)\r\n"
-        L"  SpaceSniffer.exe filter \"<filter>\"            Apply filter to previous scan/load\r\n"
-        L"  SpaceSniffer.exe export \"<name>\" \"<path>\"     Export using template name\r\n"
-        L"  SpaceSniffer.exe autoclose                     Exit automatically after export\r\n"
-        L"  SpaceSniffer.exe help                          Show this help\r\n\r\n"
+        L"  NeoSniffer.exe scan \"<path>\"                Open a scan view\r\n"
+        L"  NeoSniffer.exe load \"<file>\"                Open a snapshot (.ssx/.sns/.du)\r\n"
+        L"  NeoSniffer.exe filter \"<filter>\"            Apply filter to previous scan/load\r\n"
+        L"  NeoSniffer.exe export \"<name>\" \"<path>\"     Export using template name\r\n"
+        L"  NeoSniffer.exe autoclose                     Exit automatically after export\r\n"
+        L"  NeoSniffer.exe help                          Show this help\r\n\r\n"
         L"Shortcuts: Ctrl+N New · Backspace Back · Shift+Backspace Forward · Ctrl+Home Root\r\n"
         L"           Ctrl+Up Up · Ctrl+/- Detail · Ctrl+F Free · Ctrl+U Unknown · Ctrl+T Classes\r\n"
     },
+    { L"about.heading",      L"NeoSniffer",                                L"NeoSniffer" },
+    { L"about.license",      L"MIT License · v1.0.0",                      L"MIT License · v1.0.0" },
+    { L"about.repo_label",   L"开源仓库：",                                L"Repository: " },
+    { L"about.repo_url",     L"https://github.com/yssite/neosniffer",      L"https://github.com/yssite/neosniffer" },
+    { L"about.ok",           L"确定",                                      L"OK" },
     {
         L"about.body",
-        L"SpaceSniffer Neo\n\n"
-        L"原版: SpaceSniffer 1.3.0.2 — Copyright 2007-2016 Uderzo Umberto\n"
-        L"本重制版基于完整逆向分析，原生 Win32 重写：\n"
-        L"  · 原生高 DPI（PerMonitorV2）与深色模式\n"
+        L"原生 Win32 磁盘空间分析工具（非官方独立重制，不含原版代码）：\n"
+        L"  · 原生高 DPI（PerMonitorV2）与深色 / 浅色模式\n"
         L"  · 并行目录枚举 + NTFS $MFT 直读双引擎\n"
-        L"  · 兼容原版过滤器 / 导出模板 / 配置\n"
-        L"  · 内置 MCP 服务器供 AI Agent 分析\n",
+        L"  · 兼容 SpaceSniffer 1.3.0.2 过滤器、导出模板、快照与配置格式\n"
+        L"  · 内置 MCP 服务器供 AI Agent 只读分析磁盘占用",
 
-        L"SpaceSniffer Neo\n\n"
-        L"Original: SpaceSniffer 1.3.0.2 — Copyright 2007-2016 Uderzo Umberto\n"
-        L"Native Win32 remake built from full reverse engineering:\n"
-        L"  · Native Per-Monitor V2 High DPI and Dark Mode\n"
+        L"Native Win32 disk space analyzer (unofficial independent remake, no original code):\n"
+        L"  · Native Per-Monitor V2 High DPI and Dark / Light Mode\n"
         L"  · Dual scan engine: parallel directory enum + direct NTFS $MFT reader\n"
-        L"  · Compatible with original filters, export templates, and config XML\n"
-        L"  · Built-in MCP server for AI Agent disk analysis\n"
+        L"  · Compatible with SpaceSniffer 1.3.0.2 filters, export templates, snapshots & config\n"
+        L"  · Built-in MCP server for read-only AI Agent disk analysis"
     },
 };
 

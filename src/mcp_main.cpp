@@ -1,4 +1,4 @@
-// SpaceSniffer.Mcp — stdio JSON-RPC 2.0 server exposing disk-usage analysis to AI agents.
+// NeoSniffer.Mcp — stdio JSON-RPC 2.0 server exposing disk-usage analysis to AI agents.
 // Read-only: no tool deletes or modifies files.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -9,7 +9,7 @@
 #include <vector>
 #include <map>
 #include <algorithm>
-#include "../src/core.h"
+#include "core.h"
 
 using namespace ss;
 
@@ -694,7 +694,7 @@ static std::string Dispatch(const std::string& method, const json::Value& params
     if (method == "initialize")
     {
         return "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},"
-               "\"serverInfo\":{\"name\":\"SpaceSniffer Neo\",\"version\":\"1.0.0\"}}";
+               "\"serverInfo\":{\"name\":\"NeoSniffer\",\"version\":\"1.0.0\"}}";
     }
     if (method == "tools/list")
     {
@@ -707,7 +707,7 @@ static std::string Dispatch(const std::string& method, const json::Value& params
  "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"number","default":50}},"required":["path"]}},
 {"name":"largest_folders","description":"列出占用最大的目录。",
  "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"number","default":50}},"required":["path"]}},
-{"name":"search","description":"用 SpaceSniffer 过滤器语法搜索文件，例如 *.iso;>1gb;>1month。",
+{"name":"search","description":"用 NeoSniffer 过滤器语法（兼容 SpaceSniffer 1.3.0.2）搜索文件，例如 *.iso;>1gb;>1month。",
  "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"filter":{"type":"string"},"limit":{"type":"number","default":100}},"required":["path","filter"]}},
 {"name":"tree","description":"以缩进文本打印目录树（限制深度与节点数）。",
  "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"depth":{"type":"number","default":2},"max_nodes":{"type":"number","default":500}},"required":["path"]}},
@@ -796,10 +796,9 @@ int wmain(int argc, wchar_t** argv)
     {
         exe.resize(exeLen);
         size_t sl = exe.find_last_of(L'\\');
-        std::wstring cfgPath = (sl != std::wstring::npos)
-            ? (exe.substr(0, sl) + L"\\SpaceSnifferConfig.xml")
-            : L"SpaceSnifferConfig.xml";
-        g_cfg.Load(cfgPath);
+        std::wstring dirPrefix = (sl != std::wstring::npos) ? (exe.substr(0, sl) + L"\\") : L"";
+        if (!g_cfg.Load(dirPrefix + L"NeoSnifferConfig.xml"))
+            g_cfg.Load(dirPrefix + L"SpaceSnifferConfig.xml");
     }
 
     std::string line;

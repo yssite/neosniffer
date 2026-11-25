@@ -1,5 +1,5 @@
 // ============================================================================
-// SpaceSniffer Native Config Dialog (Compact + Anti-Aliased, Win32 Tool Style)
+// NeoSniffer Native Config Dialog (Compact + Anti-Aliased, Win32 Tool Style)
 //
 // Architecture (3 Layers):
 //   1. Layout & Theme Layer   : DPI scaling, dark/light color tokens, window /
@@ -357,10 +357,10 @@ std::wstring ResolveConfigPath(const Cfg& cfg) {
         auto slash = buf.find_last_of(L"\\/");
         if (slash != std::wstring::npos) {
             buf.resize(slash + 1);
-            return buf + L"SpaceSnifferConfig.xml";
+            return buf + L"NeoSnifferConfig.xml";
         }
     }
-    return L"SpaceSnifferConfig.xml";
+    return L"NeoSnifferConfig.xml";
 }
 
 }  // namespace cfg_detail
@@ -2472,7 +2472,7 @@ bool ShowConfigDialog(HWND owner, ss::AppConfig& cfg, int dpi, bool darkMode) {
     (void)gdiplus;
 
     HINSTANCE hInst = GetModuleHandleW(nullptr);
-    constexpr const wchar_t* kClassName = L"SpaceSnifferConfigDialogCompact";
+    constexpr const wchar_t* kClassName = L"NeoSnifferConfigDialogCompact";
 
     WNDCLASSEXW existing{};
     if (!GetClassInfoExW(hInst, kClassName, &existing)) {

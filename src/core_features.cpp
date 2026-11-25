@@ -200,20 +200,20 @@ static std::vector<ExportConfig> DefaultExports()
         c.blockSorting = block; c.fineSorting = fine; c.builtIn = true; c.script = script;
         v.push_back(std::move(c));
     };
-    mk(L"Summary", L"SpaceSniffer-summary", L".txt", L"folders", L"size",
+    mk(L"Summary", L"NeoSniffer-summary", L".txt", L"folders", L"size",
        L"{script}Total size: <%disksize%>\r\nFolders   : <%foldercount%>\r\nFiles     : <%filecount%>\r\n"
        L"Path      : <%pathfile%>\r\n");
-    mk(L"Simple file list", L"SpaceSniffer-files", L".txt", L"files", L"size",
+    mk(L"Simple file list", L"NeoSniffer-files", L".txt", L"files", L"size",
        L"{script}{ if {<%isfile%>} == {true} ? {<%disksize%>\t<%pathfile%>{&br}}}");
-    mk(L"File report", L"SpaceSniffer-report", L".txt", L"files", L"size",
+    mk(L"File report", L"NeoSniffer-report", L".txt", L"files", L"size",
        L"{script}{   if {<%isfile%>} == {true}\r\n"
        L"  ? {  [{leftpad{<%disksize%>}{ }{8}}] <%file%>{&br}}\r\n"
        L"  : {   if {<%containsfiles%>} == {true}\r\n"
        L"      ? {{&br}<%pathfile%> [<%disksize%>]{&br}}\r\n"
        L"    }\r\n}");
-    mk(L"First level", L"SpaceSniffer-level1", L".txt", L"name", L"size",
+    mk(L"First level", L"NeoSniffer-level1", L".txt", L"name", L"size",
        L"{script}{ if {<%nestinglevel%>} == {1} ? {<%disksize%>\t<%name%>{&br}}}");
-    mk(L"CSV", L"SpaceSniffer-export", L".csv", L"files", L"size",
+    mk(L"CSV", L"NeoSniffer-export", L".csv", L"files", L"size",
        L"{script}\"<%pathfile%>\",\"<%disksizebytes%>\",\"<%sizebytes%>\",\"<%nestinglevel%>\"{&br}");
     return v;
 }

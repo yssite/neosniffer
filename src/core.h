@@ -1,5 +1,5 @@
-// SpaceSniffer 2.0 — core model, scanner, features (port of the reverse-engineered
-// original plus the .NET reference implementation).
+// NeoSniffer — core model, scanner, features (independent native Win32 reimplementation,
+// compatible with SpaceSniffer 1.3.0.2 filter/export/snapshot/config formats).
 #pragma once
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -170,7 +170,7 @@ struct FileClasses
 struct ExportConfig
 {
     std::wstring name;
-    std::wstring preferredFileName = L"SpaceSniffer-export";
+    std::wstring preferredFileName = L"NeoSniffer-export";
     std::wstring preferredExtension = L".txt";
     std::wstring blockSorting = L"folders";
     std::wstring fineSorting = L"size";
