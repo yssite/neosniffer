@@ -11,12 +11,12 @@ NeoSniffer/
 │   ├── core.h                  # Shared node tree, scanner, filter, export, snapshot, config types
 │   ├── core_scan.cpp           # Parallel FindFirstFileExW + NTFS $MFT reader
 │   ├── core_features.cpp       # Config XML, filter DSL, export templates, snapshots
-│   ├── ui_treemap.h/.cpp       # Nested squarified layout, GDI renderer, tooltip, zoom animation
+│   ├── ui_treemap.h/.cpp       # Treemap layout, Direct2D/GDI rendering, tooltips, zoom
 │   ├── ui_config.h/.cpp        # Settings dialog (GDI + GDI+) and Explorer shell integration
 │   ├── i18n.h/.cpp             # Simplified Chinese / English localization table
 │   └── mcp_main.cpp            # NeoSniffer.Mcp.exe stdio JSON-RPC 2.0 server
 ├── test/                       # Unit tests
-│   └── mfttest.cpp             # Synthetic NTFS FILE record & data-run decoder tests
+│   └── mfttest.cpp             # NTFS record, run-list, aggregation, and filter tests
 ├── docs/                       # Reverse-engineering analysis, code review, screenshots
 ├── app.rc                      # Win32 version info & icon resource
 ├── build.ps1                   # Build & test script (-Target x64|arm64, -Test)
