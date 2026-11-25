@@ -1,0 +1,11 @@
+# build outputs
+out/
+dist/
+*.o
+*.res
+*.exe
+*.pdb
+work/
+# dev scratch
+_*.py
+*.patch
