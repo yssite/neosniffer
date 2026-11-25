@@ -11,7 +11,7 @@ NTFS `$MFT` 直读，并内置面向 AI Agent 的只读 MCP 服务。
 
 | 特性 | 说明 |
 |---|---|
-| **不到 2 MB，零第三方依赖** | 整个程序就是**一个约 1.7 MB 的 exe**：静态链接、免安装、无运行库、无第三方 DLL，只调用 Windows 系统 DLL。 |
+| 极致轻量 | 整个程序就是**一个约 1.7 MB 的 exe**：静态链接、免安装、无运行库、无第三方 DLL，只调用 Windows 系统 DLL。 |
 | 高 DPI | Per-Monitor V2，每次绘制按当前客户区重算布局 |
 | 深色 / 浅色 | 菜单栏、弹出菜单、提示卡片、对话框全部自绘 |
 | NTFS `$MFT` 直读 | 直接解析 MFT run list；需管理员，失败自动回退到并行目录枚举 |
@@ -65,7 +65,7 @@ NeoSniffer.exe scan D:\ ; autoclose
 `largest_files`、`largest_folders`、`search`、`tree`、`file_types`、
 `duplicates`、`cleanup_candidates`、`volume_info`、`export_report`。
 
-`json
+```json
 {
   "mcpServers": {
     "neosniffer": {
