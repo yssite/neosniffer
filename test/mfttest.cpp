@@ -286,6 +286,32 @@ int wmain()
         Check(ss::test::MftAlignForTest(200002, 4096) == 200704, "align(200002) = 200704");
     }
 
+    // Folder totals and filters share the same tree model as the UI and MCP.
+    {
+        ss::Tree tree, projected;
+        ss::FileClasses classes;
+        tree.root = tree.AddNode(ss::Node::kNone, L"X:\\", ss::Kind::Drive);
+        auto folder = tree.AddNode(tree.root, L"Tagged", ss::Kind::Folder);
+        tree.nodes[folder].tag = 1;
+        auto file = tree.AddNode(folder, L"disk.iso", ss::Kind::File);
+        tree.nodes[file].size = tree.nodes[file].disk = 2LL * 1024 * 1024 * 1024;
+        tree.nodes[file].modified = FILETIME{0x34130000, 0x01d4f511};
+        tree.nodes[file].attrs = FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_HIDDEN;
+        auto freeSpace = tree.AddNode(tree.root, L"Free Space", ss::Kind::FreeSpace);
+        tree.nodes[freeSpace].disk = 1024;
+        tree.AddNode(tree.root, L"Empty", ss::Kind::Folder);
+        tree.Aggregate();
+        Check(tree.nodes[tree.root].disk == tree.nodes[file].disk, "volume totals exclude virtual space");
+        auto filter = ss::FilterExpr::Parse(L"*.iso;>1gb;>2weeks;:red;:attr:a+h-s");
+        Check(filter.Matches(tree, file, classes), "bare size and age filters and inherited tags");
+        Check(ss::ProjectFilter(tree, tree.root, filter, classes, projected) && projected.nodes.size() == 3,
+              "filter retains only matching files and ancestor folders");
+        tree.nodes[file].attrs |= FILE_ATTRIBUTE_SYSTEM;
+        Check(!filter.Matches(tree, file, classes), "compact negative attribute excludes system files");
+        Check(!ss::FilterExpr::Parse(L":attr:a,h,-s").Matches(tree, file, classes),
+              "comma-separated negative attribute excludes system files");
+    }
+
     std::printf("\n%s (%d failure%s)\n", g_failures ? "FAILED" : "ALL PASSED",
                 g_failures, g_failures == 1 ? "" : "s");
     return g_failures ? 1 : 0;

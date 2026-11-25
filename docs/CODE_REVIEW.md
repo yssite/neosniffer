@@ -1,5 +1,7 @@
 # 只读代码复审报告（NeoSniffer）
 
+> 本文保留 1.0 开发阶段的历史审查记录。当前版本的行为及验证范围见 [STATUS.md](STATUS.md)。
+
 > **执行说明**：严格只读，未修改/创建/删除任何文件，未执行任何终端命令；以下所有结论均基于对范围内全部 9 个文件及 4 个关联头文件（[core.h](../src/core.h)、[ui_treemap.h](../src/ui_treemap.h)、[ui_config.h](../src/ui_config.h)、[i18n.h](../src/i18n.h)）的完整静态阅读。
 
 ---

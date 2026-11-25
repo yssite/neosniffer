@@ -236,6 +236,7 @@ bool AppConfig::Load(const std::wstring& file)
     zoomTimeMs = ToInt(XmlValue(xml, L"zoomTimeMs"), zoomTimeMs);
     useRealZoom = ToBool(XmlValue(xml, L"useRealZoom"), useRealZoom);
     useDynaSmooth = ToBool(XmlValue(xml, L"useDynaSmooth"), useDynaSmooth);
+    treemapDirect2D = ToBool(XmlValue(xml, L"treemapDirect2D"), treemapDirect2D);
     minElementSizePx = ToInt(XmlValue(xml, L"minElementSizePx"), minElementSizePx);
     initialDetailLevel = ToInt(XmlValue(xml, L"initialDetailLevel"), initialDetailLevel);
     fontSize = ToInt(XmlValue(xml, L"fontSize"), fontSize);
@@ -319,6 +320,7 @@ bool AppConfig::Save() const
     num(L"zoomTimeMs", zoomTimeMs);
     flag(L"useRealZoom", useRealZoom);
     flag(L"useDynaSmooth", useDynaSmooth);
+    flag(L"treemapDirect2D", treemapDirect2D);
     num(L"minElementSizePx", minElementSizePx);
     num(L"initialDetailLevel", initialDetailLevel);
     num(L"fontSize", fontSize);
@@ -458,15 +460,15 @@ FilterExpr FilterExpr::Parse(const std::wstring& text)
         else if (Lowercase(t).rfind(L":attr:", 0) == 0)
         {
             term.target = FilterTerm::Attr;
-            std::vector<std::wstring> parts;
-            SplitList(t.substr(6), parts, L"+,- ");
-            for (auto& p : parts)
+            size_t pos = 6;
+            while ((pos = t.find_first_not_of(L"+, \t", pos)) != std::wstring::npos)
             {
-                bool neg = !p.empty() && p[0] == L'-';
-                std::wstring v = neg ? p.substr(1) : p;
-                DWORD bit = AttrBit(v);
-                if (!bit) continue;
+                bool neg = t[pos] == L'-';
+                if (neg) ++pos;
+                size_t end = t.find_first_of(L"+,- \t", pos);
+                DWORD bit = AttrBit(t.substr(pos, end == std::wstring::npos ? end : end - pos));
                 if (neg) term.attrNotMask |= bit; else term.attrMask |= bit;
+                pos = end;
             }
         }
         else if (Lowercase(t).rfind(L":class:", 0) == 0)
@@ -505,41 +507,25 @@ FilterExpr FilterExpr::Parse(const std::wstring& text)
             size_t i = 0;
             std::wstring src;
             while (i < t.size() && iswalpha(t[i])) { src += t[i]; ++i; }
-            if (!src.empty())
+            while (i < t.size() && iswspace(t[i])) ++i;
+            if (i < t.size() && (t[i] == L'<' || t[i] == L'>'))
             {
-                size_t j = i;
-                while (j < t.size() && iswspace(t[j])) ++j;
-                if (j < t.size() && (t[j] == L'<' || t[j] == L'>'))
-                {
-                    bool greater = t[j] == L'>';
-                    ++j;
-                    while (j < t.size() && iswspace(t[j])) ++j;
-                    std::wstring num;
-                    while (j < t.size() && (iswdigit(t[j]) || t[j] == L'.')) { num += t[j]; ++j; }
-                    while (j < t.size() && iswspace(t[j])) ++j;
-                    std::wstring unit = t.substr(j);
-                    double factor = 0, secs = 0;
-                    std::wstring lsrc = Lowercase(src);
-                    if (ParseUnit(unit, factor) && !num.empty())
-                    {
-                        term.target = FilterTerm::Size;
-                        term.greater = greater;
-                        term.threshold = (int64_t)(_wtof(num.c_str()) * factor);
-                        term.sizeLogical = (lsrc == L"s" || lsrc == L"size" || lsrc == L"filesize" ||
-                                            lsrc == L"logicalsize" || lsrc == L"logical");
-                    }
-                    else if (ParseAgeUnit(unit, secs) && !num.empty())
-                    {
-                        term.target = FilterTerm::Age;
-                        term.greater = greater;
-                        term.threshold = (int64_t)(_wtof(num.c_str()) * secs);
-                        term.ageSource = lsrc.empty() || lsrc[0] == L'm' ? 0 : (lsrc[0] == L'c' ? 1 : 2);
-                    }
-                    else
-                    {
-                        term.target = FilterTerm::FileName;
-                        term.mask = t;
-                    }
+                const wchar_t* start = t.c_str() + i + 1;
+                wchar_t* end = nullptr;
+                double value = std::wcstod(start, &end);
+                std::wstring unit = Trim(end);
+                double factor = 0;
+                bool size = ParseUnit(unit, factor);
+                bool age = !size && ParseAgeUnit(unit, factor);
+                double threshold = value * factor;
+                if (end != start && (size || age) && threshold >= 0 && threshold < 0x1p63) {
+                    std::wstring source = Lowercase(src);
+                    term.target = size ? FilterTerm::Size : FilterTerm::Age;
+                    term.greater = t[i] == L'>';
+                    term.threshold = static_cast<int64_t>(threshold);
+                    term.sizeLogical = source == L"s" || source == L"size" || source == L"filesize" ||
+                                       source == L"logicalsize" || source == L"logical";
+                    term.ageSource = source.empty() || source[0] == L'm' ? 0 : (source[0] == L'c' ? 1 : 2);
                     fx.terms.push_back(std::move(term));
                     continue;
                 }
@@ -594,11 +580,18 @@ bool FilterExpr::Matches(const Tree& t, uint32_t node, const FileClasses& fc) co
                 hit = term.greater ? age > term.threshold : age < term.threshold;
                 break;
             }
-            case FilterTerm::Tag:
-                if (term.tagAny) hit = n.tag != 0;
-                else if (n.tag < 1 || n.tag > 4) hit = false;
-                else hit = (term.tagMask & (1 << (n.tag - 1))) != 0;
+            case FilterTerm::Tag: {
+                uint32_t current = node;
+                for (int depth = 0; depth < 512 && t.Valid(current); ++depth) {
+                    uint8_t tag = t.nodes[current].tag;
+                    if (tag >= 1 && tag <= 4) {
+                        hit = term.tagAny || (term.tagMask & (1 << (tag - 1))) != 0;
+                        break;
+                    }
+                    current = t.nodes[current].parent;
+                }
                 break;
+            }
             case FilterTerm::Attr:
             {
                 DWORD a = n.attrs;
@@ -625,7 +618,7 @@ bool FilterExpr::Matches(const Tree& t, uint32_t node, const FileClasses& fc) co
 static uint32_t ProjectNode(const Tree& src, uint32_t node, const FilterExpr& fx, const FileClasses& fc,
                             Tree& out, uint32_t parentOut, int depth)
 {
-    if (!src.Valid(node) || depth > 512) return kNone;
+    if (!src.Valid(node) || src.nodes[node].IsVirtual() || depth > 512) return kNone;
     const Node& n = src.nodes[node];
     if (n.IsFile())
     {
@@ -637,28 +630,21 @@ static uint32_t ProjectNode(const Tree& src, uint32_t node, const FilterExpr& fx
         return idx;
     }
 
+    size_t namesBefore = out.names.size();
     uint32_t idx = out.AddNode(parentOut, src.Name(node), (Kind)n.kind);
     out.nodes[idx].attrs = n.attrs; out.nodes[idx].tag = n.tag; out.nodes[idx].created = n.created;
     out.nodes[idx].modified = n.modified; out.nodes[idx].accessed = n.accessed;
     bool any = false;
     for (uint32_t c = n.firstChild; c != kNone; c = src.nodes[c].nextSibling)
     {
-        if (src.nodes[c].IsVirtual())
-        {
-            uint32_t v = out.AddNode(idx, src.Name(c), (Kind)src.nodes[c].kind);
-            out.nodes[v].size = src.nodes[c].size;
-            out.nodes[v].disk = src.nodes[c].disk;
-            any = true;
-            continue;
-        }
         uint32_t sub = ProjectNode(src, c, fx, fc, out, idx, depth + 1);
         if (sub != kNone) any = true;
     }
     if (!any && parentOut != kNone)
     {
-        // unlink empty folder from parent's child list
-        if (out.Valid(parentOut) && out.nodes[parentOut].firstChild == idx)
-            out.nodes[parentOut].firstChild = out.nodes[idx].nextSibling;
+        out.nodes[parentOut].firstChild = out.nodes[idx].nextSibling;
+        out.nodes.pop_back();
+        out.names.resize(namesBefore);
         return kNone;
     }
     return idx;
@@ -672,6 +658,8 @@ bool ProjectFilter(const Tree& src, uint32_t node, const FilterExpr& fx, const F
     uint32_t idx = ProjectNode(src, node, fx, fc, out, kNone, 0);
     if (idx == kNone) return false;
     out.root = idx;
+    out.rootPath = src.Path(node);
+    if (node != src.root) out.SetName(out.nodes[idx], out.rootPath);
     out.nodes[idx].parent = kNone;
     out.Aggregate();
     return true;
@@ -1039,8 +1027,9 @@ std::vector<Tok> ParseTemplate(const std::wstring& srcIn)
 } // namespace
 
 std::wstring ExportPreview(const Tree& t, uint32_t root, const ExportConfig& cfg, const FileClasses& fc,
-                           size_t maxNodes)
+                           size_t maxNodes, size_t maxChars, bool& truncated)
 {
+    truncated = false;
     if (!t.Valid(root)) return L"";
     auto toks = ParseTemplate(cfg.script);
     std::wstring out;
@@ -1048,15 +1037,23 @@ std::wstring ExportPreview(const Tree& t, uint32_t root, const ExportConfig& cfg
 
     std::function<void(uint32_t, int)> walk = [&](uint32_t n, int level)
     {
-        if (count >= maxNodes || level > 512 || !t.Valid(n)) return;
+        if (truncated || !t.Valid(n)) return;
+        if (count >= maxNodes || level > 512) { truncated = true; return; }
         RenderCtx c{ &t, n, root, level, &fc };
-        for (auto& tk : toks) out += RenderOne(tk, c);
+        for (auto& tk : toks) {
+            std::wstring text = RenderOne(tk, c);
+            if (text.size() > maxChars - out.size()) { truncated = true; return; }
+            out += text;
+        }
         count++;
         std::vector<uint32_t> kids;
         for (uint32_t k = t.nodes[n].firstChild; k != kNone; k = t.nodes[k].nextSibling) kids.push_back(k);
         std::sort(kids.begin(), kids.end(), [&](uint32_t a, uint32_t b)
         { return t.nodes[a].disk > t.nodes[b].disk; });
-        for (uint32_t k : kids) walk(k, level + 1);
+        for (uint32_t k : kids) {
+            if (truncated) break;
+            walk(k, level + 1);
+        }
     };
     walk(root, 0);
     return out;

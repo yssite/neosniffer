@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---|---|
-| 1.0.x | Yes |
+| 1.1.x | Yes |
 
 ## Running as Administrator
 
@@ -20,7 +20,7 @@ When running NeoSniffer elevated (via **Restart as Admin** or **Always run as ad
 ## MCP Server (`NeoSniffer.Mcp.exe`)
 
 - All analysis tools are **read-only** and never delete, rename, or modify scanned files.
-- `export_report` writes a text/CSV report to the `output` file path specified by the MCP client. Ensure your MCP host enforces appropriate confirmation policies before allowing an AI agent to invoke `export_report` or run `NeoSniffer.Mcp.exe` with elevated privileges.
+- `export_report` returns report text through stdio. Upgrade clients using 1.0.x, whose report tool accepted a caller-supplied filesystem destination.
 - `NeoSniffer.Mcp.exe` communicates strictly over local `stdio` and does not open listening network sockets.
 
 ## Reporting a Vulnerability

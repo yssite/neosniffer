@@ -2497,19 +2497,12 @@ TreemapPresent TreemapRenderer::Draw(HWND canvas, HDC metrics, HWND view, const 
                                     const ss::Tree& tree, const std::vector<TreemapBox>& boxes,
                                     const TreemapStyle& style, const TreemapOverlay& overlay)
 {
-    static const bool useGdi = [] {
-        wchar_t setting[2]{};
-        return GetEnvironmentVariableW(L"NEOSNIFFER_TREEMAP_GDI", setting, 2) == 1 && setting[0] == L'1';
-    }();
-    if (useGdi || !metrics || RectW(area) <= 0 || RectH(area) <= 0)
+    if (!metrics || RectW(area) <= 0 || RectH(area) <= 0)
         return TreemapPresent::Fallback;
-
-    GdiCache& cache = GetGdiCache();
-    cache.EnsureFonts(metrics, style.dpi > 0 ? style.dpi : 96, style.fontSize);
-    if (!cache.EnsureWriteFormats()) return TreemapPresent::Fallback;
 
     auto size = D2D1::SizeU(RectW(area), RectH(area));
     if (!target_) {
+        if (GetTickCount64() < retryAfter_) return TreemapPresent::Fallback;
         static auto factory = [] {
             ID2D1Factory* ptr = nullptr;
             D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &ptr);
@@ -2523,6 +2516,7 @@ TreemapPresent TreemapRenderer::Draw(HWND canvas, HDC metrics, HWND view, const 
         if (FAILED(factory->CreateHwndRenderTarget(props, hwndProps, &target_)) ||
             FAILED(target_->CreateSolidColorBrush(D2D1::ColorF(0), &brush_))) {
             Reset();
+            retryAfter_ = GetTickCount64() + 5000;
             return TreemapPresent::Fallback;
         }
         target_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
@@ -2536,6 +2530,14 @@ TreemapPresent TreemapRenderer::Draw(HWND canvas, HDC metrics, HWND view, const 
     }
     if (target_->CheckWindowState() & D2D1_WINDOW_STATE_OCCLUDED)
         return TreemapPresent::Occluded;
+
+    GdiCache& cache = GetGdiCache();
+    cache.EnsureFonts(metrics, style.dpi > 0 ? style.dpi : 96, style.fontSize);
+    if (!cache.EnsureWriteFormats()) {
+        Reset();
+        retryAfter_ = GetTickCount64() + 5000;
+        return TreemapPresent::Fallback;
+    }
 
     target_->BeginDraw();
     target_->SetTransform(D2D1::Matrix3x2F::Translation(-static_cast<float>(area.left),

@@ -2,8 +2,10 @@
 
 **English** | [中文](README_CN.md)
 
-A native Win32 C++20 single-executable disk space analyzer: Per-Monitor V2 high DPI, dark mode,
-direct NTFS `$MFT` scanning, and a built-in read-only MCP server for AI agents.
+A lightweight native Win32 disk space analyzer with a V-Sync Direct2D treemap,
+Per-Monitor V2 DPI, dark mode, direct NTFS `$MFT` scanning, and a read-only MCP server.
+
+[Download NeoSniffer for Windows](https://github.com/yssite/neosniffer/releases/latest)
 
 ![NeoSniffer](docs/screenshot.webp)
 
@@ -15,7 +17,7 @@ direct NTFS `$MFT` scanning, and a built-in read-only MCP server for AI agents.
 | High DPI | Per-Monitor V2, layout recalculated per paint |
 | Dark / light theme | Custom-drawn menu bar, popups, tooltips, dialogs |
 | NTFS `$MFT` direct read | Reads the MFT run list directly; needs admin, falls back to a parallel directory walk automatically |
-| Nested treemap | Container header bands, per-level insets, tiered labels, 180 ms zoom animation |
+| Nested treemap | Hardware-accelerated Direct2D and V-Sync by default on supported devices, with GDI fallback |
 | Filter DSL | e.g. `*.iso;>1gb;>2weeks;:red` |
 | Export | Template DSL (`{script}`, `if X ? {a} : {b}`, `leftpad/rightpad`) |
 | Snapshots | `.ssx` (native) / `.sns` (SpaceSniffer-compatible, read) / `.du` (text) |
@@ -46,17 +48,17 @@ Output: `out\NeoSniffer.exe`, `out\NeoSniffer.Mcp.exe`.
 ## Usage
 
 Double-click the exe and pick a drive, or drop a folder into the window.
-Double-click a box to drill in; `Backspace` goes back.
+Double-click a box to drill in. Press `Backspace` to go back.
+To switch between Direct2D and GDI, open **Settings → Appearance → Renderer (after restart)**.
+The new selection takes effect the next time you start NeoSniffer.
 
 Command line:
 
-```
-NeoSniffer.exe scan   D:\
-NeoSniffer.exe scan   D:\ ; E:\                (semicolon-separated)
-NeoSniffer.exe load   snapshot.ssx
-NeoSniffer.exe filter "*.iso;>1gb"
-NeoSniffer.exe export "report.html"
-NeoSniffer.exe scan D:\ ; autoclose
+```powershell
+NeoSniffer.exe scan D:\
+NeoSniffer.exe scan D:\ scan E:\
+NeoSniffer.exe load snapshot.ssx filter "*.iso;>1gb"
+NeoSniffer.exe scan D:\ export "Summary" "report.txt" autoclose
 ```
 
 ## MCP server
@@ -65,11 +67,17 @@ NeoSniffer.exe scan D:\ ; autoclose
 `largest_files`, `largest_folders`, `search`, `tree`, `file_types`,
 `duplicates`, `cleanup_candidates`, `volume_info`, `export_report`.
 
+In 1.1, `export_report` accepts `path`, optional `config` (default `Summary`) and optional
+`max_nodes`. It returns report text and a `truncated` flag through MCP. The former
+`output` argument has been removed. File exports are available from the desktop app or CLI.
+Duplicate and cleanup results are candidates for manual review. Scan totals cover
+discovered files, and used, free, and total volume bytes are reported separately.
+
 ```json
 {
   "mcpServers": {
     "neosniffer": {
-      "command": "C:\\\\Tools\\\\NeoSniffer\\\\NeoSniffer.Mcp.exe",
+      "command": "C:\\Tools\\NeoSniffer\\NeoSniffer.Mcp.exe",
       "args": []
     }
   }
@@ -78,11 +86,8 @@ NeoSniffer.exe scan D:\ ; autoclose
 
 ## Known limitations
 
-- `alwaysRunAsAdmin` has no fallback: if UAC is cancelled the app exits without a window.
-- Administrator MFT results were validated by unit tests and volume-total cross-checks, but not
-  against every file system edge case.
-- Paths longer than `MAX_PATH` are handled with the `\\\\?\\` prefix; exotic UNC paths are untested.
-- 28 P1 findings from the internal review are documented in `docs/CODE_REVIEW.md`.
+- Cancelling UAC at startup continues in standard-user mode with directory enumeration.
+- NTFS tests use synthetic records. Native 4Kn drives and unusual UNC paths have limited hardware coverage.
 
 ## Disclaimer
 

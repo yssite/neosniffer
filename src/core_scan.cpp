@@ -6,6 +6,8 @@
 #include <thread>
 #include <cstdio>
 #include <cwctype>
+#include <memory>
+#include <new>
 #include <vector>
 
 namespace ss {
@@ -206,6 +208,9 @@ void Tree::Aggregate()
     std::vector<Frame> stack;
     if (!Valid(root)) return;
     stack.push_back({ root, nodes[root].firstChild });
+    const auto addBytes = [](int64_t total, int64_t bytes) {
+        return total + std::clamp(bytes, int64_t{0}, INT64_MAX - total);
+    };
 
     while (!stack.empty())
     {
@@ -225,15 +230,12 @@ void Tree::Aggregate()
             int64_t size = 0, disk = 0;
             for (uint32_t c = n.firstChild; c != kNone && Valid(c); c = nodes[c].nextSibling)
             {
-                size += nodes[c].size;
-                disk += nodes[c].disk;
+                if (nodes[c].IsVirtual()) continue;
+                size = addBytes(size, nodes[c].size);
+                disk = addBytes(disk, nodes[c].disk);
             }
             n.size = size;
             n.disk = disk;
-        }
-        else if (n.IsVirtual())
-        {
-            // keep its own size
         }
     }
 }
@@ -349,7 +351,7 @@ VolumeInfo QueryVolume(const std::wstring& path)
         vi.fs = fs;
         vi.label = label;
     }
-    vi.isNtfs = (_wcsicmp(vi.fs.c_str(), L"NTFS") == 0) || (_wcsicmp(vi.fs.c_str(), L"ReFS") == 0);
+    vi.isNtfs = _wcsicmp(vi.fs.c_str(), L"NTFS") == 0;
 
     DWORD spc = 0, bps = 0, freeClusters = 0, totalClusters = 0;
     if (!volRoot.empty() && GetDiskFreeSpaceW(volRoot.c_str(), &spc, &bps, &freeClusters, &totalClusters) && spc && bps)
@@ -361,7 +363,7 @@ VolumeInfo QueryVolume(const std::wstring& path)
     if (!volRoot.empty() && GetDiskFreeSpaceExW(volRoot.c_str(), &avail, &total, &totalFree))
     {
         vi.total = (int64_t)total.QuadPart;
-        vi.free = (int64_t)(totalFree.QuadPart ? totalFree.QuadPart : avail.QuadPart);
+        vi.free = (int64_t)totalFree.QuadPart;
     }
     return vi;
 }
@@ -520,7 +522,7 @@ void AddPseudoNodes(Tree& t)
     uint32_t freeNode = t.AddNode(t.root, L"Free Space", Kind::FreeSpace);
     t.nodes[freeNode].size = vi.free;
     t.nodes[freeNode].disk = vi.free;
-    int64_t unknown = vi.total - t.nodes[t.root].disk - vi.free;
+    int64_t unknown = std::max<int64_t>(0, vi.total - vi.free) - t.nodes[t.root].disk;
     if (unknown > 1024 * 1024)
     {
         uint32_t un = t.AddNode(t.root, L"Unknown (not yet scanned) Space", Kind::Unknown);
@@ -690,7 +692,6 @@ bool ScanFast(const std::wstring& path, const ScanOptions& opt, Tree& t, ScanPro
 
     t.Aggregate();
     if (opt.includePseudo) AddPseudoNodes(t);
-    t.Aggregate();
     return true;
 }
 
@@ -817,11 +818,14 @@ bool ApplyFixup(uint8_t* rec, DWORD recordSize)
     WORD usaOff = *(WORD*)(rec + 4);
     WORD usaCount = *(WORD*)(rec + 6);
     if (usaOff == 0 && usaCount == 0) return true;
-    if (usaCount <= 1 || usaOff == 0 || (DWORD)usaOff + (DWORD)usaCount * 2 > recordSize) return false;
+    // NTFS 3.x uses a fixed 512-byte update-sequence stride, including on 4Kn media.
+    constexpr DWORD stride = 512;
+    if (recordSize % stride != 0 || usaCount != recordSize / stride + 1 || usaOff < 8 ||
+        (DWORD)usaOff + (DWORD)usaCount * 2 > stride - 2) return false;
     WORD usn = *(WORD*)(rec + usaOff);
     for (WORD i = 1; i < usaCount; ++i)
     {
-        DWORD end = (DWORD)i * 512 - 2;
+        DWORD end = (DWORD)i * stride - 2;
         if (end + 2 > recordSize) return false;
         if (*(WORD*)(rec + end) != usn) return false;
         *(WORD*)(rec + end) = *(WORD*)(rec + usaOff + i * 2);
@@ -839,15 +843,15 @@ std::vector<Run> ParseRuns(const uint8_t* rec, DWORD limit, DWORD off)
     while (p < limit)
     {
         uint8_t header = rec[p++];
-        if (header == 0) break;
+        if (header == 0) return runs;
         int lenBytes = header & 0x0F;
         int offBytes = (header >> 4) & 0x0F;
-        if (lenBytes == 0 || lenBytes > 8 || offBytes > 8 || (DWORD)(lenBytes + offBytes) > limit - p) break;
+        if (lenBytes == 0 || lenBytes > 8 || offBytes > 8 || (DWORD)(lenBytes + offBytes) > limit - p) return {};
         uint64_t ulen = 0;
         for (int i = 0; i < lenBytes; ++i) ulen |= (uint64_t)rec[p + i] << (8 * i);
         p += (DWORD)lenBytes;
-        int64_t length = (int64_t)ulen;
-        if (length <= 0) break;
+        if (ulen == 0 || ulen > static_cast<uint64_t>(INT64_MAX - vcn)) return {};
+        int64_t length = static_cast<int64_t>(ulen);
         if (offBytes == 0)
         {
             runs.push_back({ vcn, -1, length, true });
@@ -859,11 +863,14 @@ std::vector<Run> ParseRuns(const uint8_t* rec, DWORD limit, DWORD off)
         if (offBytes < 8 && (rec[p + offBytes - 1] & 0x80))
             udelta |= (~0ULL << (8 * offBytes));
         p += (DWORD)offBytes;
-        lcn += (int64_t)udelta;
+        int64_t delta = static_cast<int64_t>(udelta);
+        if (delta < -lcn || delta > INT64_MAX - lcn) return {};
+        lcn += delta;
+        if (length - 1 > INT64_MAX - lcn) return {};
         runs.push_back({ vcn, lcn, length, false });
         vcn += length;
     }
-    return runs;
+    return {};
 }
 
 void ParseAttributes(const uint8_t* rec, DWORD recSize, DWORD recOff,
@@ -1488,9 +1495,10 @@ bool ScanMftEx(const std::wstring& path, const ScanOptions& opt, Tree& t, ScanPr
     std::vector<AttrListRef> attrListRefs;
     std::vector<ExtRecordInfo> extRecords;
 
-    const DWORD chunkRecords = 8192;
+    const DWORD chunkRecords = std::min<DWORD>(8192, (8 * 1024 * 1024) / recSize);
     DWORD chunkBytes = chunkRecords * recSize;
-    std::vector<uint8_t> chunk(chunkBytes);
+    std::unique_ptr<uint8_t[]> chunk(new (std::nothrow) uint8_t[chunkBytes]);
+    if (!chunk) { CloseHandle(h); return false; }
     // P0-6: carry partial FILE record bytes across run/chunk boundaries (e.g. cluster < recSize)
     // so a FILE record is never truncated or misaligned.
     std::vector<uint8_t> carry;
@@ -1650,7 +1658,7 @@ bool ScanMftEx(const std::wstring& path, const ScanOptions& opt, Tree& t, ScanPr
             }
             DWORD want = (DWORD)std::min<int64_t>(chunkBytes, runBytes - runOff);
             if (want == 0) break;
-            if (!ReadAt(h, runDiskBase + runOff, chunk.data(), want))
+            if (!ReadAt(h, runDiskBase + runOff, chunk.get(), want))
             {
                 // Advance recordIndex past the unreadable remainder of this run so
                 // subsequent MFT record numbers remain exact.
@@ -1663,7 +1671,7 @@ bool ScanMftEx(const std::wstring& path, const ScanOptions& opt, Tree& t, ScanPr
             {
                 DWORD need = recSize - (DWORD)carry.size();
                 DWORD take = std::min(need, want);
-                carry.insert(carry.end(), chunk.data(), chunk.data() + take);
+                carry.insert(carry.end(), chunk.get(), chunk.get() + take);
                 pos += take;
                 if (carry.size() == recSize)
                 {
@@ -1673,12 +1681,12 @@ bool ScanMftEx(const std::wstring& path, const ScanOptions& opt, Tree& t, ScanPr
             }
             while (pos + recSize <= want)
             {
-                processRecord(chunk.data() + pos, recordIndex++);
+                processRecord(chunk.get() + pos, recordIndex++);
                 pos += recSize;
             }
             if (pos < want)
             {
-                carry.assign(chunk.data() + pos, chunk.data() + want);
+                carry.assign(chunk.get() + pos, chunk.get() + want);
             }
 
             runOff += want;
@@ -2009,7 +2017,6 @@ bool ScanMftEx(const std::wstring& path, const ScanOptions& opt, Tree& t, ScanPr
 
     t.Aggregate();
     if (opt.includePseudo) AddPseudoNodes(t);
-    t.Aggregate();
     return true;
 }
 
@@ -2031,19 +2038,15 @@ bool ScanPath(const std::wstring& path, const ScanOptions& opt, Tree& out,
         if (ScanMftEx(path, opt, out, progress))
         {
             // Whole-volume safety net: verify non-virtual accounted bytes against volume used
-            // bytes; if a large share is still missing, fall back to directory enumeration.
+            // bytes and reject totals beyond the volume capacity.
             bool incomplete = false;
             if (IsWholeVolumePath(path) && out.Valid(out.root))
             {
                 VolumeInfo vi = QueryVolume(path);
                 int64_t used = vi.total - vi.free;
-                int64_t accounted = 0;
-                for (uint32_t c = out.nodes[out.root].firstChild; c != Node::kNone && out.Valid(c);
-                     c = out.nodes[c].nextSibling)
-                {
-                    if (!out.nodes[c].IsVirtual()) accounted += out.nodes[c].disk;
-                }
-                incomplete = used > 0 && accounted < used * 7 / 10;
+                int64_t accounted = out.nodes[out.root].disk;
+                incomplete = vi.total > 0 &&
+                    (accounted > vi.total || (used > 0 && accounted < used / 10 * 7 + used % 10 * 7 / 10));
             }
             if (!incomplete)
             {

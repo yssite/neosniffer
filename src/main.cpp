@@ -14,6 +14,7 @@
 #include <ole2.h>
 #include <cmath>
 #include <chrono>
+#include <bit>
 #include <thread>
 #include <atomic>
 #include <vector>
@@ -136,6 +137,7 @@ struct Palette
 
 static Palette g_pal;
 static AppConfig g_cfg;
+static bool g_treemapDirect2D = true;
 static HFONT g_fontUI = nullptr, g_fontUIBold = nullptr, g_fontMono = nullptr, g_fontSmall = nullptr, g_fontSeg = nullptr;
 static HBRUSH g_editBrush = nullptr;
 static COLORREF g_editBrushColor = CLR_INVALID;
@@ -714,10 +716,18 @@ static void UpdateViewStatus(ViewState* v)
     Tree& t = ActiveTree(v);
     if (!t.Valid(t.root)) { v->status = L""; return; }
     int64_t files = 0, dirs = 0;
-    for (size_t i = 0; i < t.nodes.size(); ++i)
+    for (uint32_t n = t.root; t.Valid(n); )
     {
-        if (t.nodes[i].kind == (uint8_t)Kind::File) files++;
-        else dirs++;
+        if (t.nodes[n].IsFile()) files++;
+        else if (t.nodes[n].IsFolder()) dirs++;
+        if (t.Valid(t.nodes[n].firstChild)) {
+            n = t.nodes[n].firstChild;
+            continue;
+        }
+        while (n != t.root && !t.Valid(t.nodes[n].nextSibling))
+            n = t.nodes[n].parent;
+        if (n == t.root) break;
+        n = t.nodes[n].nextSibling;
     }
     std::wstring mode = v->usedMft ? ss::i18n::T(L"view.mode.mft") : ss::i18n::T(L"view.mode.enum");
     v->status = FmtCount(files) + ss::i18n::T(L"view.status.files") + FmtCount(dirs) + ss::i18n::T(L"view.status.dirs") +
@@ -880,7 +890,9 @@ static LRESULT CALLBACK CanvasProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 const Tree& tree = ActiveTree(v);
                 auto style = ViewTreemapStyle();
                 auto overlay = ViewTreemapOverlay(v);
-                present = v->renderer.Draw(hwnd, dc, v->hwnd, area, tree, v->boxes, style, overlay);
+                present = g_treemapDirect2D
+                    ? v->renderer.Draw(hwnd, dc, v->hwnd, area, tree, v->boxes, style, overlay)
+                    : ss::ui::TreemapPresent::Fallback;
                 if (present == ss::ui::TreemapPresent::Fallback)
                     DrawCanvasGdi(dc, v, area, tree, style, overlay);
             }
@@ -958,6 +970,8 @@ static LRESULT CALLBACK ViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 v->renderer.Reset();
             }
             break;
+        case WM_KEYDOWN:
+            return SendMessageW(GetParent(hwnd), msg, wp, lp);
 
         case WM_CTLCOLOREDIT:
         {
@@ -2276,6 +2290,59 @@ static void LogLine(const std::wstring& s)
     if (g_main) InvalidateRect(g_main, &g_rcStatus, FALSE);
 }
 
+static const wchar_t* kViewerFontProperty = L"NeoSnifferViewerFont";
+
+static UINT ViewerDpi(HWND hwnd)
+{
+    using GetDpiFn = UINT (WINAPI*)(HWND);
+    static const auto getDpi = std::bit_cast<GetDpiFn>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+    UINT dpi = getDpi ? getDpi(hwnd) : 0;
+    return dpi ? dpi : g_dpi;
+}
+
+static int ViewerPad(HWND hwnd)
+{
+    return MulDiv(8, ViewerDpi(hwnd), 96);
+}
+
+static void UpdateViewerFont(HWND hwnd, HWND edit)
+{
+    if (!edit) return;
+    LOGFONTW lf{};
+    lf.lfHeight = -MulDiv(10, ViewerDpi(hwnd), 72);
+    lf.lfWeight = FW_NORMAL;
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lf.lfQuality = CLEARTYPE_QUALITY;
+    wcscpy_s(lf.lfFaceName, L"Consolas");
+    HFONT old = reinterpret_cast<HFONT>(GetPropW(hwnd, kViewerFontProperty));
+    HFONT font = CreateFontIndirectW(&lf);
+    if (font) {
+        if (SetPropW(hwnd, kViewerFontProperty, font)) {
+            SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            if (old) DeleteObject(old);
+        } else {
+            DeleteObject(font);
+        }
+    }
+    int pad = ViewerPad(hwnd);
+    SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(pad, pad));
+}
+
+static void DestroyViewerFont(HWND hwnd, HWND edit)
+{
+    if (edit) SendMessageW(edit, WM_SETFONT, 0, FALSE);
+    if (HANDLE font = RemovePropW(hwnd, kViewerFontProperty)) DeleteObject(font);
+}
+
+static void ResizeViewerForDpi(HWND hwnd, HWND edit, const RECT& r)
+{
+    UpdateViewerFont(hwnd, edit);
+    SetWindowPos(hwnd, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    SendMessageW(hwnd, WM_SIZE, 0, 0);
+}
+
 static LRESULT CALLBACK LogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg)
@@ -2289,8 +2356,7 @@ static LRESULT CALLBACK LogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (g_logEdit)
             {
                 SetWindowTheme(g_logEdit, g_pal.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
-                SendMessageW(g_logEdit, WM_SETFONT, (WPARAM)g_fontMono, TRUE);
-                SendMessageW(g_logEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(8), S(8)));
+                UpdateViewerFont(hwnd, g_logEdit);
             }
             LogLine(ss::i18n::T(L"log.opened"));
             return 0;
@@ -2301,7 +2367,7 @@ static LRESULT CALLBACK LogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             {
                 RECT rc;
                 GetClientRect(hwnd, &rc);
-                int pad = S(8);
+                int pad = ViewerPad(hwnd);
                 int w = std::max(0, (int)rc.right - (pad + 1) * 2);
                 int h = std::max(0, (int)rc.bottom - (pad + 1) * 2);
                 SetWindowPos(g_logEdit, nullptr, pad + 1, pad + 1, w, h, SWP_NOZORDER);
@@ -2309,6 +2375,9 @@ static LRESULT CALLBACK LogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
+        case WM_DPICHANGED:
+            ResizeViewerForDpi(hwnd, g_logEdit, *reinterpret_cast<const RECT*>(lp));
+            return 0;
         case WM_CTLCOLOREDIT:
         case WM_CTLCOLORSTATIC:
         {
@@ -2325,7 +2394,7 @@ static LRESULT CALLBACK LogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             RECT rc;
             GetClientRect(hwnd, &rc);
             Fill(dc, rc, g_pal.bg);
-            int pad = S(8);
+            int pad = ViewerPad(hwnd);
             if (rc.right > pad * 2 + 2 && rc.bottom > pad * 2 + 2)
                 Frame(dc, RECT{ pad, pad, rc.right - pad, rc.bottom - pad }, g_pal.border);
             EndPaint(hwnd, &ps);
@@ -2333,6 +2402,7 @@ static LRESULT CALLBACK LogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         case WM_CLOSE: ShowWindow(hwnd, SW_HIDE); return 0;
         case WM_DESTROY:
+            DestroyViewerFont(hwnd, g_logEdit);
             g_log = nullptr;
             g_logEdit = nullptr;
             return 0;
@@ -3408,11 +3478,10 @@ static void ApplyThemeToEditWindow(HWND hwnd, HWND edit)
     if (edit && IsWindow(edit))
     {
         SetWindowTheme(edit, g_pal.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
-        SendMessageW(edit, WM_SETFONT, (WPARAM)g_fontMono, TRUE);
-        SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(8), S(8)));
+        UpdateViewerFont(hwnd, edit);
         RECT rc{};
         GetClientRect(hwnd, &rc);
-        int pad = S(8);
+        int pad = ViewerPad(hwnd);
         int w = std::max(0, (int)rc.right - (pad + 1) * 2);
         int h = std::max(0, (int)rc.bottom - (pad + 1) * 2);
         SetWindowPos(edit, nullptr, pad + 1, pad + 1, w, h,
@@ -3463,8 +3532,7 @@ static LRESULT CALLBACK HelpProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (edit)
             {
                 SetWindowTheme(edit, g_pal.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
-                SendMessageW(edit, WM_SETFONT, (WPARAM)g_fontMono, TRUE);
-                SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(8), S(8)));
+                UpdateViewerFont(hwnd, edit);
             }
             return 0;
         }
@@ -3475,7 +3543,7 @@ static LRESULT CALLBACK HelpProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             {
                 RECT rc;
                 GetClientRect(hwnd, &rc);
-                int pad = S(8);
+                int pad = ViewerPad(hwnd);
                 int w = std::max(0, (int)rc.right - (pad + 1) * 2);
                 int h = std::max(0, (int)rc.bottom - (pad + 1) * 2);
                 SetWindowPos(edit, nullptr, pad + 1, pad + 1, w, h, SWP_NOZORDER);
@@ -3483,6 +3551,9 @@ static LRESULT CALLBACK HelpProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
+        case WM_DPICHANGED:
+            ResizeViewerForDpi(hwnd, GetDlgItem(hwnd, 1), *reinterpret_cast<const RECT*>(lp));
+            return 0;
         case WM_CTLCOLOREDIT:
         case WM_CTLCOLORSTATIC:
         {
@@ -3501,7 +3572,7 @@ static LRESULT CALLBACK HelpProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             RECT rc;
             GetClientRect(hwnd, &rc);
             Fill(dc, rc, g_pal.bg);
-            int pad = S(8);
+            int pad = ViewerPad(hwnd);
             if (rc.right > pad * 2 + 2 && rc.bottom > pad * 2 + 2)
                 Frame(dc, RECT{ pad, pad, rc.right - pad, rc.bottom - pad }, g_pal.border);
             EndPaint(hwnd, &ps);
@@ -3509,6 +3580,7 @@ static LRESULT CALLBACK HelpProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         case WM_DESTROY:
         {
+            DestroyViewerFont(hwnd, GetDlgItem(hwnd, 1));
             g_helpWindows.erase(
                 std::remove_if(g_helpWindows.begin(), g_helpWindows.end(),
                                [hwnd](const HelpWindowEntry& e) { return e.hwnd == hwnd; }),
@@ -3914,6 +3986,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int show)
         g_cfg.Load(legacyCfgPath);
         g_cfg.path = newCfgPath;
     }
+    g_treemapDirect2D = g_cfg.treemapDirect2D;
     // first run (or migrated from legacy config): persist to NeoSnifferConfig.xml
     if (GetFileAttributesW(g_cfg.path.c_str()) == INVALID_FILE_ATTRIBUTES) g_cfg.Save();
 

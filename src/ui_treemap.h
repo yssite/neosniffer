@@ -88,6 +88,7 @@ public:
 private:
     ID2D1HwndRenderTarget* target_ = nullptr;
     ID2D1SolidColorBrush* brush_ = nullptr;
+    uint64_t retryAfter_ = 0;
 };
 
 // ----------------------------------------------------------------------------

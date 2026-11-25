@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
+#include <list>
 #include <string>
 #include <vector>
 #include <map>
@@ -142,10 +144,31 @@ static bool ParseValue(const std::string& s, size_t& i, Value& v, int depth, siz
     if (c == 't') { if (s.compare(i, 4, "true") == 0) { v.type = Value::Bool; v.b = true; i += 4; return true; } }
     if (c == 'f') { if (s.compare(i, 5, "false") == 0) { v.type = Value::Bool; v.b = false; i += 5; return true; } }
     if (s.compare(i, 4, "null") == 0) { v.type = Value::Null; i += 4; return true; }
+    size_t pos = i;
+    auto digit = [&] { return pos < s.size() && s[pos] >= '0' && s[pos] <= '9'; };
+    if (c == '-') ++pos;
+    if (!digit()) return false;
+    if (s[pos] == '0') ++pos;
+    else while (digit()) ++pos;
+    if (pos < s.size() && s[pos] == '.') {
+        ++pos;
+        if (!digit()) return false;
+        while (digit()) ++pos;
+    }
+    if (pos < s.size() && (s[pos] == 'e' || s[pos] == 'E')) {
+        ++pos;
+        if (pos < s.size() && (s[pos] == '+' || s[pos] == '-')) ++pos;
+        if (!digit()) return false;
+        while (digit()) ++pos;
+    }
     char* end = nullptr;
-    double d = strtod(s.c_str() + i, &end);
-    if (end && end != s.c_str() + i) { v.type = Value::Num; v.num = d; i = (size_t)(end - s.c_str()); return true; }
-    return false;
+    double number = strtod(s.c_str() + i, &end);
+    if (end != s.c_str() + pos || !std::isfinite(number)) return false;
+    v.type = Value::Num;
+    v.num = number;
+    v.str.assign(s, i, pos - i);
+    i = pos;
+    return true;
 }
 
 static bool ParseValue(const std::string& s, size_t& i, Value& v)
@@ -202,12 +225,12 @@ static std::string Esc(const std::wstring& w) { return Escape(W2U(w)); }
 // ------------------------------------------------------------------ cache
 struct CacheEntry
 {
-    Tree tree;
     std::wstring path;
-    bool valid = false;
+    Tree tree;
 };
 
-static std::map<std::wstring, CacheEntry> g_cache;
+static std::list<CacheEntry> g_cache;
+static constexpr size_t kMaxCachedTrees = 2;
 static AppConfig g_cfg;
 
 static std::wstring NormalizePathForMatch(std::wstring p)
@@ -219,34 +242,40 @@ static std::wstring NormalizePathForMatch(std::wstring p)
     return p;
 }
 
-static bool GetTree(const std::wstring& pathIn, Tree** out, std::wstring& error)
+static bool GetTree(const std::wstring& pathIn, Tree** out, std::wstring& error, bool refresh = false)
 {
     std::wstring path = Trim(pathIn);
     if (path.empty()) { error = L"path is required"; return false; }
     std::wstring normKey = NormalizePathForMatch(path);
-    for (auto& kv : g_cache)
-    {
-        if (_wcsicmp(kv.first.c_str(), normKey.c_str()) == 0 && kv.second.valid)
-        {
-            *out = &kv.second.tree;
+    if (normKey.size() == 2 && normKey[1] == L':') {
+        normKey += L'\\';
+        path += L'\\';
+    }
+    auto cached = std::find_if(g_cache.begin(), g_cache.end(), [&](const CacheEntry& entry) {
+        return _wcsicmp(entry.path.c_str(), normKey.c_str()) == 0;
+    });
+    if (cached != g_cache.end()) {
+        if (!refresh) {
+            g_cache.splice(g_cache.begin(), g_cache, cached);
+            *out = &g_cache.front().tree;
             return true;
         }
+        g_cache.erase(cached);
     }
-    auto& e = g_cache[normKey];
+    if (g_cache.size() >= kMaxCachedTrees) g_cache.pop_back();
+    Tree tree;
     ScanOptions opt;
-    opt.mode = ScanOptions::Auto;
-    ScanProgress prog;
-    bool usedMft = false;
-    if (!ScanPath(path, opt, e.tree, &prog, &usedMft))
+    opt.mode = normKey.size() == 3 && normKey[1] == L':' && normKey[2] == L'\\'
+        ? ScanOptions::Auto : ScanOptions::Fast;
+    opt.includePseudo = false;
+    if (!ScanPath(path, opt, tree, nullptr, nullptr))
     {
-        g_cache.erase(normKey);
         error = L"scan failed: " + path;
         return false;
     }
-    e.tree.ApplyGroups(g_cfg.classes);
-    e.path = path;
-    e.valid = true;
-    *out = &e.tree;
+    tree.ApplyGroups(g_cfg.classes);
+    g_cache.push_front({std::move(normKey), std::move(tree)});
+    *out = &g_cache.front().tree;
     return true;
 }
 
@@ -279,6 +308,11 @@ static uint32_t ResolveNode(Tree& t, const std::wstring& path, bool* isFile = nu
 }
 
 // ------------------------------------------------------------------ tool helpers
+static int BoundedCount(const json::Value& value, int fallback, int maximum = 1000)
+{
+    return static_cast<int>(std::clamp(value.AsNum(fallback), 0.0, static_cast<double>(maximum)));
+}
+
 static std::string NodeJson(Tree& t, uint32_t n, bool withPath = true)
 {
     const Node& nd = t.nodes[n];
@@ -338,20 +372,17 @@ static std::string ToolScan(const json::Value& args)
 {
     std::wstring path = json::U2W(args["path"].AsString());
     if (path.empty()) return ToolResult("path is required", true);
-    std::wstring normKey = NormalizePathForMatch(Trim(path));
-    for (auto it = g_cache.begin(); it != g_cache.end(); )
-    {
-        if (_wcsicmp(it->first.c_str(), normKey.c_str()) == 0) it = g_cache.erase(it);
-        else ++it;
-    }
     Tree* t = nullptr;
     std::wstring err;
-    if (!GetTree(path, &t, err)) return ToolResult(json::W2U(err), true);
+    if (!GetTree(path, &t, err, true)) return ToolResult(json::W2U(err), true);
 
     int64_t files = 0, dirs = 0;
     std::vector<uint32_t> all;
     CollectAll(*t, t->root, all);
-    for (uint32_t n : all) (t->nodes[n].IsFile() ? files : dirs)++;
+    for (uint32_t n : all) {
+        if (t->nodes[n].IsFile()) ++files;
+        else if (t->nodes[n].IsFolder()) ++dirs;
+    }
 
     VolumeInfo vi = QueryVolume(path);
     std::string o = "{";
@@ -362,7 +393,8 @@ static std::string ToolScan(const json::Value& args)
     o += ",\"total_disk_size\":" + std::to_string(t->nodes[t->root].disk);
     o += ",\"total_human\":" + json::Esc(FmtSize(t->nodes[t->root].disk));
     o += ",\"volume\":{\"fs\":" + json::Esc(vi.fs) + ",\"cluster\":" + std::to_string(vi.bytesPerCluster) +
-         ",\"total\":" + std::to_string(vi.total) + ",\"free\":" + std::to_string(vi.free) + "}";
+         ",\"total\":" + std::to_string(vi.total) + ",\"free\":" + std::to_string(vi.free) +
+         ",\"used\":" + std::to_string(vi.total - vi.free) + "}";
     o += ",\"top_children\":[";
     auto kids = SortedChildren(*t, t->root);
     for (size_t i = 0; i < kids.size() && i < 10; ++i)
@@ -377,7 +409,7 @@ static std::string ToolScan(const json::Value& args)
 static std::string ToolListChildren(const json::Value& args)
 {
     std::wstring path = json::U2W(args["path"].AsString());
-    int limit = args["limit"].AsNum(100);
+    int limit = BoundedCount(args["limit"], 100);
     Tree* t = nullptr;
     std::wstring err;
     if (!GetTree(path, &t, err)) return ToolResult(json::W2U(err), true);
@@ -398,7 +430,7 @@ static std::string ToolListChildren(const json::Value& args)
 static std::string ToolLargest(const json::Value& args, bool files)
 {
     std::wstring path = json::U2W(args["path"].AsString());
-    int limit = (int)args["limit"].AsNum(50);
+    int limit = BoundedCount(args["limit"], 50);
     Tree* t = nullptr;
     std::wstring err;
     if (!GetTree(path, &t, err)) return ToolResult(json::W2U(err), true);
@@ -430,7 +462,7 @@ static std::string ToolSearch(const json::Value& args)
 {
     std::wstring path = json::U2W(args["path"].AsString());
     std::wstring expr = json::U2W(args["filter"].AsString());
-    int limit = (int)args["limit"].AsNum(100);
+    int limit = BoundedCount(args["limit"], 100);
     Tree* t = nullptr;
     std::wstring err;
     if (!GetTree(path, &t, err)) return ToolResult(json::W2U(err), true);
@@ -465,8 +497,8 @@ static std::string ToolSearch(const json::Value& args)
 static std::string ToolTree(const json::Value& args)
 {
     std::wstring path = json::U2W(args["path"].AsString());
-    int depth = std::clamp((int)args["depth"].AsNum(2), 0, 64);
-    int maxNodes = std::clamp((int)args["max_nodes"].AsNum(500), 0, 10000);
+    int depth = BoundedCount(args["depth"], 2, 64);
+    int maxNodes = BoundedCount(args["max_nodes"], 500, 10000);
     Tree* t = nullptr;
     std::wstring err;
     if (!GetTree(path, &t, err)) return ToolResult(json::W2U(err), true);
@@ -477,11 +509,15 @@ static std::string ToolTree(const json::Value& args)
     int count = 0;
     std::function<void(uint32_t, int)> walk = [&](uint32_t n, int level)
     {
-        if (count++ > maxNodes) return;
+        if (count >= maxNodes) return;
+        ++count;
         out.append((size_t)level * 2, ' ');
         out += "- " + json::W2U(t->Name(n)) + "  (" + json::W2U(FmtSize(t->nodes[n].disk)) + ")\n";
         if (level >= depth) return;
-        for (uint32_t c : SortedChildren(*t, n)) walk(c, level + 1);
+        for (uint32_t c : SortedChildren(*t, n)) {
+            if (count >= maxNodes) break;
+            walk(c, level + 1);
+        }
     };
     walk(start, 0);
     return ToolResult(out);
@@ -490,7 +526,7 @@ static std::string ToolTree(const json::Value& args)
 static std::string ToolFileTypes(const json::Value& args)
 {
     std::wstring path = json::U2W(args["path"].AsString());
-    int top = (int)args["top"].AsNum(20);
+    int top = BoundedCount(args["top"], 20);
     Tree* t = nullptr;
     std::wstring err;
     if (!GetTree(path, &t, err)) return ToolResult(json::W2U(err), true);
@@ -528,8 +564,8 @@ static std::string ToolFileTypes(const json::Value& args)
 static std::string ToolDuplicates(const json::Value& args)
 {
     std::wstring path = json::U2W(args["path"].AsString());
-    int64_t minSize = (int64_t)args["min_size_mb"].AsNum(1) * 1024 * 1024;
-    int limit = (int)args["limit"].AsNum(30);
+    int64_t minSize = static_cast<int64_t>(std::clamp(args["min_size_mb"].AsNum(1), 0.0, 0x1p42) * (1024 * 1024));
+    int limit = BoundedCount(args["limit"], 30);
     Tree* t = nullptr;
     std::wstring err;
     if (!GetTree(path, &t, err)) return ToolResult(json::W2U(err), true);
@@ -572,12 +608,12 @@ static std::string ToolDuplicates(const json::Value& args)
 static std::string ToolCleanup(const json::Value& args)
 {
     std::wstring path = json::U2W(args["path"].AsString());
-    int limit = (int)args["limit"].AsNum(100);
+    int limit = BoundedCount(args["limit"], 100);
     Tree* t = nullptr;
     std::wstring err;
     if (!GetTree(path, &t, err)) return ToolResult(json::W2U(err), true);
 
-    struct Item { std::wstring cat, reason, risk, path; int64_t size; };
+    struct Item { std::wstring cat, reason, path; int64_t size; };
     std::vector<Item> items;
     std::vector<uint32_t> all;
     CollectAll(*t, t->root, all);
@@ -600,7 +636,6 @@ static std::string ToolCleanup(const json::Value& args)
             hit = true;
             it.cat = L"临时/备份文件";
             it.reason = L"扩展名符合临时文件模式";
-            it.risk = L"low";
         }
         else if (lower.find(L"\\windows\\temp\\") != std::wstring::npos ||
                  lower.find(L"\\appdata\\local\\temp\\") != std::wstring::npos)
@@ -608,7 +643,6 @@ static std::string ToolCleanup(const json::Value& args)
             hit = true;
             it.cat = L"临时目录";
             it.reason = L"位于 Temp 目录内";
-            it.risk = L"low";
         }
         else if (t->nodes[n].size > 100LL * 1024 * 1024)
         {
@@ -622,7 +656,6 @@ static std::string ToolCleanup(const json::Value& args)
                 hit = true;
                 it.cat = L"陈旧安装包/镜像";
                 it.reason = L"超过 1 年未修改的大体积安装包";
-                it.risk = L"medium";
             }
         }
         if (hit) items.push_back(it);
@@ -641,7 +674,7 @@ static std::string ToolCleanup(const json::Value& args)
     {
         if (i) o += ",";
         o += "{\"category\":" + json::Esc(items[i].cat) + ",\"reason\":" + json::Esc(items[i].reason) +
-             ",\"risk\":\"" + json::W2U(items[i].risk) + "\",\"size\":" + std::to_string(items[i].size) +
+             ",\"risk\":\"unverified\",\"size\":" + std::to_string(items[i].size) +
              ",\"path\":" + json::Esc(items[i].path) + "}";
     }
     o += "]}";
@@ -674,17 +707,20 @@ static std::string ToolExport(const json::Value& args)
 {
     std::wstring path = json::U2W(args["path"].AsString());
     std::wstring name = json::U2W(args["config"].AsString());
-    std::wstring outFile = json::U2W(args["output"].AsString());
-    if (outFile.empty()) return ToolResult("output is required", true);
-    Tree* t = nullptr;
-    std::wstring err;
-    if (!GetTree(path, &t, err)) return ToolResult(json::W2U(err), true);
+    if (args.obj.contains("output"))
+        return ToolResult("export_report returns report text via MCP. Remove the output parameter.", true);
+    if (name.empty()) name = L"Summary";
     const ExportConfig* cfg = nullptr;
     for (auto& e : g_cfg.exports) if (_wcsicmp(e.name.c_str(), name.c_str()) == 0) cfg = &e;
     if (!cfg) return ToolResult("unknown export config: " + json::W2U(name), true);
-    ExportResult r = ExportRun(*t, t->root, *cfg, g_cfg.classes, outFile, nullptr);
-    std::string o = "{\"ok\":" + std::string(r.ok ? "true" : "false") + ",\"output\":" + json::Esc(outFile) +
-                    ",\"bytes\":" + std::to_string(r.bytes) + "}";
+    Tree* t = nullptr;
+    std::wstring err;
+    if (!GetTree(path, &t, err)) return ToolResult(json::W2U(err), true);
+    bool truncated = false;
+    int maxNodes = BoundedCount(args["max_nodes"], 500);
+    auto report = ExportPreview(*t, t->root, *cfg, g_cfg.classes, maxNodes, 256 * 1024, truncated);
+    std::string o = "{\"report\":" + json::Esc(report) +
+                    ",\"truncated\":" + (truncated ? "true" : "false") + "}";
     return JsonResult(o);
 }
 
@@ -694,11 +730,11 @@ static std::string Dispatch(const std::string& method, const json::Value& params
     if (method == "initialize")
     {
         return "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},"
-               "\"serverInfo\":{\"name\":\"NeoSniffer\",\"version\":\"1.0.1\"}}";
+               "\"serverInfo\":{\"name\":\"NeoSniffer\",\"version\":\"1.1.0\"}}";
     }
     if (method == "tools/list")
     {
-        const char* tools = R"({"tools":[
+        std::string tools = R"({"tools":[
 {"name":"scan","description":"扫描一个驱动器或目录，返回总体统计与前 10 大子项。结果会缓存供后续工具使用。",
  "inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"要扫描的路径，例如 C:\\ 或 D:\\Projects"}},"required":["path"]}},
 {"name":"list_children","description":"列出某个目录的直接子项（按占用降序）。",
@@ -713,15 +749,17 @@ static std::string Dispatch(const std::string& method, const json::Value& params
  "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"depth":{"type":"number","default":2},"max_nodes":{"type":"number","default":500}},"required":["path"]}},
 {"name":"file_types","description":"按扩展名聚合占用。",
  "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"top":{"type":"number","default":20}},"required":["path"]}},
-{"name":"duplicates","description":"查找同名同大小的重复文件，估算可回收空间（只读，不删除）。",
+{"name":"duplicates","description":"列出同名同大小的候选文件。未比较文件内容，结果仅供人工核对。",
  "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"min_size_mb":{"type":"number","default":1},"limit":{"type":"number","default":30}},"required":["path"]}},
-{"name":"cleanup_candidates","description":"给出清理建议（临时文件、陈旧安装包等）与风险等级；不会删除任何文件。",
+{"name":"cleanup_candidates","description":"按路径、扩展名、年龄等条件列出候选文件。删除风险未经验证，需人工核对。",
  "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"number","default":100}},"required":["path"]}},
 {"name":"volume_info","description":"卷信息：文件系统、簇大小、容量、可用空间、是否可用 $MFT 直读。",
  "inputSchema":{"type":"object","properties":{"path":{"type":"string"}}}},
-{"name":"export_report","description":"用内置导出模板生成报告文件（Summary / File report / Simple file list / First level / CSV）。",
- "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"config":{"type":"string"},"output":{"type":"string"}},"required":["path","output"]}}
+{"name":"export_report","description":"用内置模板生成报告文本，通过 MCP 返回，并标明是否截断。",
+ "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"config":{"type":"string","default":"Summary"},"max_nodes":{"type":"integer","minimum":0,"maximum":1000,"default":500}},"required":["path"]}}
 ]})";
+        std::erase(tools, '\n');
+        std::erase(tools, '\r');
         return tools;
     }
     if (method == "tools/call")
@@ -830,7 +868,7 @@ int wmain(int argc, wchar_t** argv)
         std::string id;
         const json::Value& idv = req["id"];
         if (idv.type == json::Value::Str) id = json::Escape(idv.str);
-        else if (idv.type == json::Value::Num) id = std::to_string((long long)idv.num);
+        else if (idv.type == json::Value::Num) id = idv.str;
 
         std::string method = req["method"].AsString();
         if (method.empty())

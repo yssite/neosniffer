@@ -4,6 +4,26 @@ All notable changes to NeoSniffer will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.1.0] - 2026-11-26
+
+### Added
+
+- Hardware-accelerated Direct2D treemap with V-Sync and automatic GDI fallback. Select the renderer in Settings → Appearance and restart to apply it.
+
+### Fixed
+
+- Keep free and unknown space in the treemap while excluding them from file counts and aggregated scan sizes.
+- Support bare size and age expressions, negative attributes, and inherited tags in filters.
+- Restore shortcuts while the treemap has focus. Update settings, log, and help layouts for per-monitor DPI changes.
+- Bound MFT run arithmetic and read buffers. Reject scan totals above volume capacity and fall back to enumeration in automatic mode.
+- Enable CI on the default `master` branch.
+- Return MCP tool discovery as a single JSON-RPC line and preserve numeric request IDs.
+
+### Changed
+
+- MCP `export_report` returns bounded report text through stdio. Clients should remove the former `output` argument.
+- MCP caches the two most recently used scans and caps result limits. Directory requests use enumeration. Duplicate and cleanup results are candidates for manual review.
+
 ## [1.0.0] - 2026-11-25
 
 ### Added

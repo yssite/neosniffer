@@ -49,7 +49,7 @@ Running `build.ps1 -Test` compiles `test/mfttest.cpp` with `-DSS_TEST_HOOKS` aga
 ## Code Style & Constraints
 
 - **Language & Compiler:** C++20 with `clang++` (`-std=c++20 -O2 -municode -static -Wall -Wextra`).
-- **Zero External Runtime Dependencies:** Use Windows system DLLs only (`kernel32`, `user32`, `gdi32`, `comctl32`, `dwmapi`, `shell32`, `ole32`, `uxtheme`, `shlwapi`, `advapi32`, `msimg32`, `version`, `comdlg32`, `gdiplus`, `winmm`, `pathcch`). Do not introduce `.NET`, MFC, or third-party DLLs.
+- **Zero External Runtime Dependencies:** Use Windows system DLLs only. The treemap also uses system Direct2D and DirectWrite.
 - **Unicode & Encoding:** Keep source files UTF-8 and use `wchar_t` / `L"..."` Win32 Unicode APIs (`*W`).
 - **Resource Safety:** Pair all GDI/Win32 handles (`CreateCompatibleDC`, `CreateCompatibleBitmap`, `CreateFontW`, `CreatePen`, `CreateSolidBrush`, `CreateFileW`, `RegOpenKeyExW`) using RAII wrappers or guaranteed cleanup paths.
 - **Safety & Simplicity:** Avoid `goto` and `std::regex`; bound all recursion depths and untrusted buffer sizes.

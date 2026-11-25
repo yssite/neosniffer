@@ -586,6 +586,7 @@ enum class FieldId {
     ZoomTimeMs,
     UseRealZoom,
     UseDynaSmooth,
+    TreemapRenderer,
     // Behavior
     ScanAds,
     UseMftScanner,
@@ -704,6 +705,7 @@ std::vector<SettingRow> BuildRowsForTab(TabId tab) {
             rows.push_back({RowKind::Checkbox, FieldId::DarkMode, T(L"cfg.dark_mode")});
             rows.push_back({RowKind::Segmented, FieldId::Language, T(L"cfg.language")});
             rows.push_back({RowKind::Segmented, FieldId::InitialStyle, T(L"cfg.init_style")});
+            rows.push_back({RowKind::Segmented, FieldId::TreemapRenderer, T(L"cfg.treemap_renderer")});
             rows.push_back({RowKind::GroupHeader, FieldId::None, T(L"cfg.grp.colors")});
             rows.push_back({RowKind::ColorSwatch, FieldId::DriveColor, T(L"cfg.color.drive")});
             rows.push_back({RowKind::ColorSwatch, FieldId::FolderColor, T(L"cfg.color.folder")});
@@ -1656,6 +1658,10 @@ void DrawSettingsBody(HDC hdc, Gdiplus::Graphics& g, const DialogState& st) {
                     labels[0] = T(L"cfg.lang.auto");
                     labels[1] = T(L"cfg.lang.zh");
                     labels[2] = T(L"cfg.lang.en");
+                } else if (row.field == FieldId::TreemapRenderer) {
+                    activeIdx = st.draft.treemapDirect2D ? 0 : 1;
+                    labels[0] = L"Direct2D";
+                    labels[1] = L"GDI";
                 } else {
                     count = 2;
                     activeIdx = cfg_detail::ReadStyleIndex(st.draft.initialStyle);
@@ -2138,6 +2144,8 @@ void HandleLButtonDown(DialogState& st, int x, int y) {
                 st.rows = BuildRowsForTab(st.activeTab);
                 st.RebuildLayout();
                 if (st.hwnd) SetWindowTextW(st.hwnd, ss::i18n::T(L"cfg.window_title"));
+            } else if (row.field == FieldId::TreemapRenderer) {
+                st.draft.treemapDirect2D = hit.subIndex == 0;
             } else {
                 cfg_detail::WriteStyleIndex(st.draft.initialStyle, hit.subIndex);
             }
@@ -2306,6 +2314,17 @@ LRESULT CALLBACK ConfigWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
             st->RebuildLayout();
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
+
+        case WM_DPICHANGED: {
+            st->m.dpi = HIWORD(wParam);
+            st->fonts.Create(st->m.dpi);
+            const auto& r = *reinterpret_cast<const RECT*>(lParam);
+            SetWindowPos(hwnd, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            st->RebuildLayout();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
 
         case WM_PAINT:
             PaintDialog(hwnd, *st);

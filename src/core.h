@@ -185,6 +185,7 @@ struct AppConfig
     int zoomTimeMs = 250;
     bool useRealZoom = false;
     bool useDynaSmooth = true;
+    bool treemapDirect2D = true;
     int minElementSizePx = 10;
     int initialDetailLevel = 3;
     int fontSize = 8;
@@ -256,7 +257,7 @@ struct ExportResult { bool ok = false; std::wstring message; int64_t bytes = 0; 
 ExportResult ExportRun(const Tree& t, uint32_t root, const ExportConfig& cfg, const FileClasses& fc,
                        const std::wstring& outPath, std::function<void(int64_t,int64_t)> progress);
 std::wstring ExportPreview(const Tree& t, uint32_t root, const ExportConfig& cfg, const FileClasses& fc,
-                           size_t maxNodes = 3000);
+                           size_t maxNodes, size_t maxChars, bool& truncated);
 
 // ---------------------------------------------------------------- snapshot
 bool SaveSnapshot(const Tree& t, const std::wstring& path, bool nativeSns);

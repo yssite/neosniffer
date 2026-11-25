@@ -23,7 +23,7 @@ Lang g_lang = Lang::Zh;
 
 constexpr Entry kTable[] = {
     // ---- window & dialog titles ----
-    { L"app.title",          L"NeoSniffer 1.0.1",                  L"NeoSniffer 1.0.1" },
+    { L"app.title",          L"NeoSniffer 1.1.0",                  L"NeoSniffer 1.1.0" },
     { L"log.title",          L"NeoSniffer 日志",                   L"NeoSniffer Log" },
     { L"cfg.window_title",   L"设置 - NeoSniffer",                 L"Settings - NeoSniffer" },
     { L"help.filter.title",  L"过滤器帮助",                        L"Filter Help" },
@@ -240,6 +240,7 @@ constexpr Entry kTable[] = {
     { L"cfg.dark_mode",          L"深色主题",                      L"Dark theme" },
     { L"cfg.language",           L"语言",                          L"Language" },
     { L"cfg.init_style",         L"初始视图样式",                  L"Initial view style" },
+    { L"cfg.treemap_renderer",   L"矩形图渲染（重启生效）",         L"Renderer (after restart)" },
     { L"cfg.color.drive",        L"驱动器颜色",                    L"Drive color" },
     { L"cfg.color.folder",       L"文件夹颜色",                    L"Folder color" },
     { L"cfg.color.file",         L"文件颜色",                      L"File color" },
@@ -359,10 +360,10 @@ constexpr Entry kTable[] = {
         L"  5. search              按过滤器语法（兼容 SpaceSniffer）搜索文件\r\n"
         L"  6. tree                以缩进文本输出目录树（支持深度与节点数上限）\r\n"
         L"  7. file_types          按文件扩展名聚合统计文件数量与占用\r\n"
-        L"  8. duplicates          查找同名同大小的重复文件并估算可回收空间\r\n"
-        L"  9. cleanup_candidates  给出临时文件/陈旧安装包等清理建议与风险等级（不删除）\r\n"
+        L"  8. duplicates          列出同名同大小的候选文件，未比较内容\r\n"
+        L"  9. cleanup_candidates  按路径、扩展名和年龄筛选候选文件，供人工核对\r\n"
         L" 10. volume_info         查询卷文件系统、簇大小、容量、可用空间及 $MFT 直读能力\r\n"
-        L" 11. export_report       使用内置导出模板生成报告文件（Summary / CSV 等）\r\n\r\n"
+        L" 11. export_report       使用内置模板生成报告文本，通过 MCP 返回\r\n\r\n"
         L"配置示例（请将 %REPO% 替换为实际仓库目录，例如 E:\\\\Develop\\\\NeoSniffer）\r\n\r\n"
         L"1) Claude Desktop (%APPDATA%\\Claude\\claude_desktop_config.json)\r\n"
         L"{\r\n"
@@ -402,10 +403,10 @@ constexpr Entry kTable[] = {
         L"  5. search              Search files with SpaceSniffer-compatible filter syntax\r\n"
         L"  6. tree                Print an indented directory tree with depth/node limits\r\n"
         L"  7. file_types          Aggregate file counts and disk usage by extension\r\n"
-        L"  8. duplicates          Find same-name same-size duplicates and estimate reclaimable space\r\n"
-        L"  9. cleanup_candidates  Suggest read-only cleanup candidates (temp/old installers) with risk\r\n"
+        L"  8. duplicates          List same-name, same-size candidates for manual comparison\r\n"
+        L"  9. cleanup_candidates  List path, extension, and age matches for manual review\r\n"
         L" 10. volume_info         Query filesystem, cluster size, total/free space, and $MFT support\r\n"
-        L" 11. export_report       Generate a report file with a built-in export template (Summary/CSV)\r\n\r\n"
+        L" 11. export_report       Return report text using a built-in template (Summary/CSV)\r\n\r\n"
         L"Configuration Examples (replace %REPO% with your repo path, e.g. E:\\\\Develop\\\\NeoSniffer)\r\n\r\n"
         L"1) Claude Desktop (%APPDATA%\\Claude\\claude_desktop_config.json)\r\n"
         L"{\r\n"
@@ -435,7 +436,7 @@ constexpr Entry kTable[] = {
         L"    {\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"volume_info\",\"arguments\":{\"path\":\"C:\\\\\"}}}\r\n"
     },
     { L"about.heading",      L"NeoSniffer",                                L"NeoSniffer" },
-    { L"about.license",      L"MIT License · v1.0.1",                      L"MIT License · v1.0.1" },
+    { L"about.license",      L"MIT License · v1.1.0",                      L"MIT License · v1.1.0" },
     { L"about.repo_label",   L"开源仓库：",                                L"Repository: " },
     { L"about.repo_url",     L"https://github.com/yssite/neosniffer",      L"https://github.com/yssite/neosniffer" },
     { L"about.ok",           L"确定",                                      L"OK" },
