@@ -1,6 +1,6 @@
 # SpaceSniffer Neo（逆向还原 + 现代化重制）
 
-原版 `C:\Users\EDM\bin\SpaceSniffer.exe`（1.3.0.2，2016 年停更，Delphi 2010 + VCL + Graphics32）
+原版 `%USERPROFILE%\bin\SpaceSniffer.exe`（1.3.0.2，2016 年停更，Delphi 2010 + VCL + Graphics32）
 的完整逆向分析与现代化重制。**保持原版原生 Win32 自绘架构**，用 C++20 重写为**单文件、零运行库依赖**
 的 exe，并补上原版没有的能力。
 
@@ -77,7 +77,7 @@ SpaceSniffer.exe load "snapshot.ssx" filter "*.iso;>1gb"
 {
   "mcpServers": {
     "spacesniffer": {
-      "command": "G:\\Reverse-Enginnering-AI\\SpaceSniffer_Reverse\\native\\out\\SpaceSniffer.Mcp.exe"
+      "command": "%REPO%\out\NeoSniffer.Mcp.exe"
     }
   }
 }
