@@ -30,7 +30,7 @@ NTFS `$MFT` 直读，并内置面向 AI Agent 的只读 MCP 服务。
 
 ## 编译
 
-`powershell
+```powershell
 # x64
 powershell -ExecutionPolicy Bypass -File build.ps1
 
@@ -39,7 +39,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Target arm64
 
 # 单元测试
 powershell -ExecutionPolicy Bypass -File build.ps1 -Test
-`
+```
 
 产物：`out\NeoSniffer.exe`、`out\NeoSniffer.Mcp.exe`。
 
@@ -50,14 +50,14 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Test
 
 命令行：
 
-`
+```
 NeoSniffer.exe scan   D:\
 NeoSniffer.exe scan   D:\ ; E:\                （分号分隔多个）
 NeoSniffer.exe load   snapshot.ssx
 NeoSniffer.exe filter "*.iso;>1gb"
 NeoSniffer.exe export "report.html"
 NeoSniffer.exe scan D:\ ; autoclose
-`
+```
 
 ## MCP 服务
 
@@ -74,7 +74,7 @@ NeoSniffer.exe scan D:\ ; autoclose
     }
   }
 }
-`
+```
 
 ## 已知限制
 

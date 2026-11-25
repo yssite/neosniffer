@@ -30,7 +30,7 @@ direct NTFS `$MFT` scanning, and a built-in read-only MCP server for AI agents.
 
 ## Build
 
-`powershell
+```powershell
 # x64
 powershell -ExecutionPolicy Bypass -File build.ps1
 
@@ -39,7 +39,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Target arm64
 
 # unit tests
 powershell -ExecutionPolicy Bypass -File build.ps1 -Test
-`
+```
 
 Output: `out\NeoSniffer.exe`, `out\NeoSniffer.Mcp.exe`.
 
@@ -50,14 +50,14 @@ Double-click a box to drill in; `Backspace` goes back.
 
 Command line:
 
-`
+```
 NeoSniffer.exe scan   D:\
 NeoSniffer.exe scan   D:\ ; E:\                (semicolon-separated)
 NeoSniffer.exe load   snapshot.ssx
 NeoSniffer.exe filter "*.iso;>1gb"
 NeoSniffer.exe export "report.html"
 NeoSniffer.exe scan D:\ ; autoclose
-`
+```
 
 ## MCP server
 
@@ -74,7 +74,7 @@ NeoSniffer.exe scan D:\ ; autoclose
     }
   }
 }
-`
+```
 
 ## Known limitations
 
