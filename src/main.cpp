@@ -6,6 +6,7 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <dwmapi.h>
+#include <uxtheme.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <commdlg.h>
@@ -136,6 +137,8 @@ static AppConfig g_cfg;
 static HFONT g_fontUI = nullptr, g_fontUIBold = nullptr, g_fontMono = nullptr, g_fontSmall = nullptr, g_fontSeg = nullptr;
 static HBRUSH g_editBrush = nullptr;
 static COLORREF g_editBrushColor = CLR_INVALID;
+static HBRUSH g_viewerBrush = nullptr;
+static COLORREF g_viewerBrushColor = CLR_INVALID;
 static int g_dpi = 96;
 
 static HBRUSH GetEditBrush(COLORREF color)
@@ -149,6 +152,17 @@ static HBRUSH GetEditBrush(COLORREF color)
     return g_editBrush;
 }
 
+static HBRUSH GetViewerBrush(COLORREF color)
+{
+    if (!g_viewerBrush || g_viewerBrushColor != color)
+    {
+        if (g_viewerBrush) DeleteObject(g_viewerBrush);
+        g_viewerBrush = CreateSolidBrush(color);
+        g_viewerBrushColor = color;
+    }
+    return g_viewerBrush;
+}
+
 static void CleanupGlobalGdi()
 {
     auto delObj = [](auto& h) { if (h) { DeleteObject(h); h = nullptr; } };
@@ -156,9 +170,12 @@ static void CleanupGlobalGdi()
     delObj(g_fontUIBold);
     delObj(g_fontMono);
     delObj(g_fontSmall);
+    delObj(g_fontSeg);
     delObj(g_fontIcon);
     delObj(g_editBrush);
     g_editBrushColor = CLR_INVALID;
+    delObj(g_viewerBrush);
+    g_viewerBrushColor = CLR_INVALID;
 }
 
 static int S(int v) { return MulDiv(v, g_dpi, 96); }
@@ -337,6 +354,8 @@ static int g_activeView = -1;
 static HWND g_main = nullptr;
 static HWND g_start = nullptr;
 static HWND g_log = nullptr;
+struct HelpWindowEntry { HWND hwnd = nullptr; int which = 0; };
+static std::vector<HelpWindowEntry> g_helpWindows;
 static bool g_showStart = true;
 static int  g_menuOpen = -1;      // index of the open menu-bar item, -1 = none
 static int  g_menuHover = -1;     // hovered menu-bar item (edge-triggered repaint)
@@ -363,7 +382,7 @@ enum
     CMD_NEW = 1000, CMD_EXPORT, CMD_SNAPSHOT, CMD_EXIT, CMD_CONFIG,
     CMD_BACK, CMD_FWD, CMD_UP, CMD_HOME, CMD_REFRESH, CMD_DETAIL_MINUS, CMD_DETAIL_PLUS,
     CMD_STYLE, CMD_FREE, CMD_UNKNOWN, CMD_DARK, CMD_LOG, CMD_HELP_FILTER, CMD_HELP_TAG,
-    CMD_HELP_CLI, CMD_ABOUT, CMD_TAG1, CMD_TAG2, CMD_TAG3, CMD_TAG4, CMD_TAG0, CMD_STOP,
+    CMD_HELP_CLI, CMD_HELP_MCP, CMD_ABOUT, CMD_TAG1, CMD_TAG2, CMD_TAG3, CMD_TAG4, CMD_TAG0, CMD_STOP,
     CMD_FILTERBAR
 };
 
@@ -379,6 +398,8 @@ static void OpenSnapshotView(const std::wstring& file);
 static void ResetStartAdminHintState();
 static bool RelaunchElevated(HWND owner, DWORD* outErr = nullptr);
 static void SyncShellIntegration(bool enable, bool logSuccess);
+static void ApplyThemeToEditWindow(HWND hwnd, HWND edit);
+static void RefreshAuxWindows(bool updateText);
 static void ShowConfigDlg(HWND owner)
 {
     bool prevShell = g_cfg.shellIntegration;
@@ -391,7 +412,6 @@ static void ShowConfigDlg(HWND owner)
         RebuildFonts();
         ApplyDwmChrome(g_main);
         if (g_main) SetWindowTextW(g_main, AppTitle());
-        if (g_log && IsWindow(g_log)) SetWindowTextW(g_log, ss::i18n::T(L"log.title"));
         // push the new settings into every open view
         for (auto& vp : g_views)
         {
@@ -414,7 +434,7 @@ static void ShowConfigDlg(HWND owner)
             InvalidateRect(g_start, nullptr, TRUE);
             UpdateWindow(g_start);
         }
-        if (g_log) InvalidateRect(g_log, nullptr, TRUE);
+        RefreshAuxWindows(true);
         LogLine(std::wstring(ss::i18n::T(L"log.cfg_saved")) + g_cfg.path);
         SyncShellIntegration(g_cfg.shellIntegration, g_cfg.shellIntegration || prevShell);
         if (g_main)
@@ -1866,6 +1886,7 @@ static std::vector<PopupMenuItem> GetTopMenuItems(int index)
             add(CMD_HELP_FILTER, T(L"menu.help.filter"), L"F1");
             add(CMD_HELP_TAG, T(L"menu.help.tag"));
             add(CMD_HELP_CLI, T(L"menu.help.cli"));
+            add(CMD_HELP_MCP, T(L"menu.help.mcp"));
             sep();
             add(CMD_ABOUT, T(L"menu.help.about"));
             break;
@@ -2145,15 +2166,49 @@ static LRESULT CALLBACK LogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                                         WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE |
                                             ES_READONLY | ES_AUTOVSCROLL,
                                         0, 0, 100, 100, hwnd, (HMENU)1, GetModuleHandleW(nullptr), nullptr);
-            SendMessageW(g_logEdit, WM_SETFONT, (WPARAM)g_fontMono, TRUE);
+            if (g_logEdit)
+            {
+                SetWindowTheme(g_logEdit, g_pal.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+                SendMessageW(g_logEdit, WM_SETFONT, (WPARAM)g_fontMono, TRUE);
+                SendMessageW(g_logEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(8), S(8)));
+            }
             LogLine(ss::i18n::T(L"log.opened"));
             return 0;
         }
         case WM_SIZE:
         {
+            if (g_logEdit)
+            {
+                RECT rc;
+                GetClientRect(hwnd, &rc);
+                int pad = S(8);
+                int w = std::max(0, (int)rc.right - (pad + 1) * 2);
+                int h = std::max(0, (int)rc.bottom - (pad + 1) * 2);
+                SetWindowPos(g_logEdit, nullptr, pad + 1, pad + 1, w, h, SWP_NOZORDER);
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORSTATIC:
+        {
+            HDC dc = (HDC)wp;
+            COLORREF bg = g_pal.panel;
+            SetTextColor(dc, g_pal.text);
+            SetBkColor(dc, bg);
+            return (LRESULT)GetViewerBrush(bg);
+        }
+        case WM_PAINT:
+        {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(hwnd, &ps);
             RECT rc;
             GetClientRect(hwnd, &rc);
-            SetWindowPos(g_logEdit, nullptr, 0, 0, rc.right, rc.bottom, SWP_NOZORDER);
+            Fill(dc, rc, g_pal.bg);
+            int pad = S(8);
+            if (rc.right > pad * 2 + 2 && rc.bottom > pad * 2 + 2)
+                Frame(dc, RECT{ pad, pad, rc.right - pad, rc.bottom - pad }, g_pal.border);
+            EndPaint(hwnd, &ps);
             return 0;
         }
         case WM_CLOSE: ShowWindow(hwnd, SW_HIDE); return 0;
@@ -2162,24 +2217,29 @@ static LRESULT CALLBACK LogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             g_logEdit = nullptr;
             return 0;
         case WM_ERASEBKGND:
-        {
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            Fill((HDC)wp, rc, g_pal.panel);
             return 1;
-        }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 static void ShowLogWindow(HWND owner)
 {
-    if (g_log) { ShowWindow(g_log, SW_SHOW); SetForegroundWindow(g_log); return; }
+    if (g_log && IsWindow(g_log))
+    {
+        ApplyThemeToEditWindow(g_log, g_logEdit);
+        ShowWindow(g_log, SW_SHOW);
+        SetForegroundWindow(g_log);
+        return;
+    }
     g_log = CreateWindowExW(WS_EX_TOOLWINDOW, kLogClass, ss::i18n::T(L"log.title"),
-                            WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, S(900), S(420),
+                            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, S(900), S(420),
                             owner, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (g_log) ApplyDwmChrome(g_log);
-    ShowWindow(g_log, SW_SHOW);
+    if (g_log)
+    {
+        ApplyDwmChrome(g_log);
+        ShowWindow(g_log, SW_SHOW);
+        UpdateWindow(g_log);
+    }
 }
 
 
@@ -2961,12 +3021,13 @@ static void DoCommand(int cmd)
                 if (vp->hwnd) InvalidateRect(vp->hwnd, nullptr, TRUE);
             ApplyDwmChrome(g_main);
             RedrawWindow(g_main, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
-            if (g_log) InvalidateRect(g_log, nullptr, TRUE);
+            RefreshAuxWindows(false);
             break;
         case CMD_LOG: ShowLogWindow(g_main); break;
         case CMD_HELP_FILTER: ShowHelpDlg(g_main, 0); break;
         case CMD_HELP_TAG: ShowHelpDlg(g_main, 1); break;
         case CMD_HELP_CLI: ShowHelpDlg(g_main, 2); break;
+        case CMD_HELP_MCP: ShowHelpDlg(g_main, 3); break;
         case CMD_ABOUT: ShowAboutDlg(g_main); break;
         case CMD_TAG1: case CMD_TAG2: case CMD_TAG3: case CMD_TAG4:
             if (v && !v->scanning)
@@ -3137,7 +3198,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             {
                 if (vp->editFilter) SendMessageW(vp->editFilter, WM_SETFONT, (WPARAM)g_fontMono, TRUE);
             }
-            if (g_logEdit) SendMessageW(g_logEdit, WM_SETFONT, (WPARAM)g_fontMono, TRUE);
+            RefreshAuxWindows(false);
             RECT* r = (RECT*)lp;
             if (r)
                 SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
@@ -3183,6 +3244,12 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 v->scanning = false;
             }
             if (g_log && IsWindow(g_log)) DestroyWindow(g_log);
+            {
+                auto helpCopy = g_helpWindows;
+                for (const auto& e : helpCopy)
+                    if (e.hwnd && IsWindow(e.hwnd)) DestroyWindow(e.hwnd);
+                g_helpWindows.clear();
+            }
             DestroyWindow(hwnd);
             g_views.clear();
             g_activeView = -1;
@@ -3199,6 +3266,69 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 // ---------------------------------------------------------------- dialogs (simplified but functional)
+static void GetHelpContent(int which, const wchar_t*& title, const wchar_t*& body)
+{
+    using ss::i18n::T;
+    switch (which)
+    {
+        case 0:  title = T(L"help.filter.title"); body = T(L"help.filter.body"); break;
+        case 1:  title = T(L"help.tag.title");    body = T(L"help.tag.body");    break;
+        case 2:  title = T(L"help.cli.title");    body = T(L"help.cli.body");    break;
+        case 3:  title = T(L"help.mcp.title");    body = T(L"help.mcp.body");    break;
+        default: title = T(L"help.filter.title"); body = T(L"help.filter.body"); break;
+    }
+}
+
+static void ApplyThemeToEditWindow(HWND hwnd, HWND edit)
+{
+    if (!hwnd || !IsWindow(hwnd)) return;
+    ApplyDwmChrome(hwnd);
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    if (edit && IsWindow(edit))
+    {
+        SetWindowTheme(edit, g_pal.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+        SendMessageW(edit, WM_SETFONT, (WPARAM)g_fontMono, TRUE);
+        SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(8), S(8)));
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        int pad = S(8);
+        int w = std::max(0, (int)rc.right - (pad + 1) * 2);
+        int h = std::max(0, (int)rc.bottom - (pad + 1) * 2);
+        SetWindowPos(edit, nullptr, pad + 1, pad + 1, w, h,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+    RedrawWindow(hwnd, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+}
+
+static void RefreshAuxWindows(bool updateText)
+{
+    g_helpWindows.erase(
+        std::remove_if(g_helpWindows.begin(), g_helpWindows.end(),
+                       [](const HelpWindowEntry& e) { return !e.hwnd || !IsWindow(e.hwnd); }),
+        g_helpWindows.end());
+
+    if (g_log && IsWindow(g_log))
+    {
+        if (updateText) SetWindowTextW(g_log, ss::i18n::T(L"log.title"));
+        ApplyThemeToEditWindow(g_log, g_logEdit);
+    }
+    for (const auto& e : g_helpWindows)
+    {
+        HWND edit = GetDlgItem(e.hwnd, 1);
+        if (updateText)
+        {
+            const wchar_t* title = nullptr;
+            const wchar_t* body = nullptr;
+            GetHelpContent(e.which, title, body);
+            SetWindowTextW(e.hwnd, title);
+            if (edit && IsWindow(edit)) SetWindowTextW(edit, body);
+        }
+        ApplyThemeToEditWindow(e.hwnd, edit);
+    }
+}
+
 static LRESULT CALLBACK HelpProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg)
@@ -3210,7 +3340,12 @@ static LRESULT CALLBACK HelpProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             HWND edit = CreateWindowExW(0, L"EDIT", text,
                                         WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY,
                                         0, 0, 100, 100, hwnd, (HMENU)1, GetModuleHandleW(nullptr), nullptr);
-            if (edit) SendMessageW(edit, WM_SETFONT, (WPARAM)g_fontMono, TRUE);
+            if (edit)
+            {
+                SetWindowTheme(edit, g_pal.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+                SendMessageW(edit, WM_SETFONT, (WPARAM)g_fontMono, TRUE);
+                SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(8), S(8)));
+            }
             return 0;
         }
         case WM_SIZE:
@@ -3220,8 +3355,44 @@ static LRESULT CALLBACK HelpProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             {
                 RECT rc;
                 GetClientRect(hwnd, &rc);
-                SetWindowPos(edit, nullptr, 0, 0, rc.right, rc.bottom, SWP_NOZORDER);
+                int pad = S(8);
+                int w = std::max(0, (int)rc.right - (pad + 1) * 2);
+                int h = std::max(0, (int)rc.bottom - (pad + 1) * 2);
+                SetWindowPos(edit, nullptr, pad + 1, pad + 1, w, h, SWP_NOZORDER);
             }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORSTATIC:
+        {
+            HDC dc = (HDC)wp;
+            COLORREF bg = g_pal.panel;
+            SetTextColor(dc, g_pal.text);
+            SetBkColor(dc, bg);
+            return (LRESULT)GetViewerBrush(bg);
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT:
+        {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            Fill(dc, rc, g_pal.bg);
+            int pad = S(8);
+            if (rc.right > pad * 2 + 2 && rc.bottom > pad * 2 + 2)
+                Frame(dc, RECT{ pad, pad, rc.right - pad, rc.bottom - pad }, g_pal.border);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_DESTROY:
+        {
+            g_helpWindows.erase(
+                std::remove_if(g_helpWindows.begin(), g_helpWindows.end(),
+                               [hwnd](const HelpWindowEntry& e) { return e.hwnd == hwnd; }),
+                g_helpWindows.end());
             return 0;
         }
     }
@@ -3230,16 +3401,34 @@ static LRESULT CALLBACK HelpProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 static void ShowHelpDlg(HWND owner, int which)
 {
-    using ss::i18n::T;
-    const wchar_t* body = which == 0 ? T(L"help.filter.body") : which == 1 ? T(L"help.tag.body") : T(L"help.cli.body");
-    const wchar_t* title = which == 0 ? T(L"help.filter.title") : which == 1 ? T(L"help.tag.title") : T(L"help.cli.title");
-    HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, kHelpClass, title, WS_OVERLAPPEDWINDOW,
+    g_helpWindows.erase(
+        std::remove_if(g_helpWindows.begin(), g_helpWindows.end(),
+                       [](const HelpWindowEntry& e) { return !e.hwnd || !IsWindow(e.hwnd); }),
+        g_helpWindows.end());
+
+    for (const auto& e : g_helpWindows)
+    {
+        if (e.which == which)
+        {
+            ApplyThemeToEditWindow(e.hwnd, GetDlgItem(e.hwnd, 1));
+            ShowWindow(e.hwnd, SW_SHOW);
+            SetForegroundWindow(e.hwnd);
+            return;
+        }
+    }
+
+    const wchar_t* title = nullptr;
+    const wchar_t* body = nullptr;
+    GetHelpContent(which, title, body);
+    HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, kHelpClass, title, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                              CW_USEDEFAULT, CW_USEDEFAULT, S(820), S(640), owner, nullptr,
                              GetModuleHandleW(nullptr), (LPVOID)body);
     if (h)
     {
+        g_helpWindows.push_back({ h, which });
         ApplyDwmChrome(h);
         ShowWindow(h, SW_SHOW);
+        UpdateWindow(h);
     }
 }
 

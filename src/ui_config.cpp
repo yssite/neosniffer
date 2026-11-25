@@ -434,16 +434,16 @@ struct LayoutMetrics {
     int NavW() const { return S(160); }
     int FooterH() const { return S(52); }
 
-    int PageHeaderH() const { return S(32); }
-    int GroupHeaderH() const { return S(22); }
+    int PageHeaderH() const { return S(36); }
+    int GroupHeaderH() const { return S(26); }
     int GroupHeaderBottomGap() const { return S(6); }
-    int GroupGap() const { return S(8); }
+    int GroupGap() const { return S(12); }
 
     int PadX() const { return S(12); }
-    int PadTop() const { return S(8); }
+    int PadTop() const { return S(10); }
     int InlineGap() const { return S(10); }
 
-    int RowH() const { return S(27); }
+    int RowH() const { return S(32); }
     int LabelW() const { return S(185); }
     int CtrlH() const { return S(18); }
 

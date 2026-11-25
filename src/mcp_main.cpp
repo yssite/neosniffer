@@ -694,7 +694,7 @@ static std::string Dispatch(const std::string& method, const json::Value& params
     if (method == "initialize")
     {
         return "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},"
-               "\"serverInfo\":{\"name\":\"NeoSniffer\",\"version\":\"1.0.0\"}}";
+               "\"serverInfo\":{\"name\":\"NeoSniffer\",\"version\":\"1.0.1\"}}";
     }
     if (method == "tools/list")
     {
