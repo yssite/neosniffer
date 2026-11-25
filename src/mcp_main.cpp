@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <cmath>
 #include <list>
 #include <string>
@@ -617,7 +618,7 @@ static std::string ToolCleanup(const json::Value& args)
     std::vector<Item> items;
     std::vector<uint32_t> all;
     CollectAll(*t, t->root, all);
-    int64_t now = (int64_t)time(nullptr);
+    int64_t now = static_cast<int64_t>(std::time(nullptr));
 
     for (uint32_t n : all)
     {

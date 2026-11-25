@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <cwchar>
 #include <string>
 #include <vector>
 
@@ -545,7 +547,7 @@ bool FilterExpr::Matches(const Tree& t, uint32_t node, const FileClasses& fc) co
     const Node& n = t.nodes[node];
     std::wstring name = t.Name(node);
     std::wstring lowerName = Lowercase(name);
-    int64_t now = (int64_t)time(nullptr);
+    int64_t now = static_cast<int64_t>(std::time(nullptr));
 
     for (auto& term : terms)
     {

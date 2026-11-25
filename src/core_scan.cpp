@@ -5,6 +5,7 @@
 #include <mutex>
 #include <thread>
 #include <cstdio>
+#include <ctime>
 #include <cwctype>
 #include <memory>
 #include <new>
@@ -111,7 +112,7 @@ std::wstring FmtAge(const FILETIME& ft)
 {
     int64_t t = FileTimeToSeconds(ft);
     if (t == 0) return L"-";
-    int64_t now = (int64_t)time(nullptr);
+    int64_t now = static_cast<int64_t>(std::time(nullptr));
     int64_t d = now - t;
     if (d < 0) d = 0;
     if (d < 60) return Fmt(L"%llds", (long long)d);

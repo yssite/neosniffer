@@ -14,30 +14,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install llvm-mingw 20.x
+      - name: Install llvm-mingw 20.1.2
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
+          LLVM_MINGW_RELEASE: "20250402"
         run: |
           $ErrorActionPreference = "Stop"
-          $headers = @{ "User-Agent" = "NeoSniffer-CI" }
-          if ($env:GH_TOKEN) { $headers["Authorization"] = "Bearer $($env:GH_TOKEN)" }
-          $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/mstorsjo/llvm-mingw/releases?per_page=15" -Headers $headers
-          $asset = $null
-          foreach ($rel in $releases) {
-            if ($rel.name -match "20\." -or $rel.body -match "LLVM 20\.") {
-              $asset = $rel.assets | Where-Object { $_.name -match "ucrt-x86_64\.zip$" } | Select-Object -First 1
-              if ($asset) { break }
-            }
-          }
-          if (-not $asset) {
-            $asset = $releases[0].assets | Where-Object { $_.name -match "ucrt-x86_64\.zip$" } | Select-Object -First 1
-          }
-          if (-not $asset) { throw "Could not find llvm-mingw ucrt-x86_64.zip asset" }
-          Write-Host "Downloading $($asset.name)..."
+          $release = $env:LLVM_MINGW_RELEASE
+          $archive = "llvm-mingw-${release}-ucrt-x86_64.zip"
           $zipPath = Join-Path $env:RUNNER_TEMP "llvm-mingw.zip"
           $extractDir = Join-Path $env:RUNNER_TEMP "llvm-mingw"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath
+          Invoke-WebRequest -Uri "https://github.com/mstorsjo/llvm-mingw/releases/download/$release/$archive" -OutFile $zipPath
           Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
           $binDir = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1 | ForEach-Object { Join-Path $_.FullName "bin" }
           if (-not (Test-Path $binDir)) { throw "llvm-mingw bin directory not found" }
