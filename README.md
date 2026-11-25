@@ -11,7 +11,7 @@ direct NTFS `$MFT` scanning, and a built-in read-only MCP server for AI agents.
 
 | Feature | Details |
 |---|---|
-| **Under 2 MB, zero dependencies** | The whole app is a **single ~1.7 MB exe** - statically linked, no installer, no runtime, no third-party DLLs. Only Windows system DLLs are used. |
+| Extremely Light | The whole app is a **single ~1.7 MB exe** - statically linked, no installer, no runtime, no third-party DLLs. Only Windows system DLLs are used. |
 | High DPI | Per-Monitor V2, layout recalculated per paint |
 | Dark / light theme | Custom-drawn menu bar, popups, tooltips, dialogs |
 | NTFS `$MFT` direct read | Reads the MFT run list directly; needs admin, falls back to a parallel directory walk automatically |
@@ -65,7 +65,7 @@ NeoSniffer.exe scan D:\ ; autoclose
 `largest_files`, `largest_folders`, `search`, `tree`, `file_types`,
 `duplicates`, `cleanup_candidates`, `volume_info`, `export_report`.
 
-`json
+```json
 {
   "mcpServers": {
     "neosniffer": {
