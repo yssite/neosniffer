@@ -13,6 +13,7 @@
 #include <shellscalingapi.h>
 #include <ole2.h>
 #include <cmath>
+#include <chrono>
 #include <thread>
 #include <atomic>
 #include <vector>
@@ -29,6 +30,7 @@ using namespace ss;
 // ---------------------------------------------------------------- constants
 static const wchar_t* kMainClass = L"NeoSnifferMainWindow";
 static const wchar_t* kViewClass = L"NeoSnifferViewWindow";
+static const wchar_t* kCanvasClass = L"NeoSnifferTreemapCanvas";
 static const wchar_t* kStartClass = L"NeoSnifferStartWindow";
 static const wchar_t* kPopupMenuClass = L"NeoSnifferPopupMenu";
 static const wchar_t* kMenuBarClass = L"NeoSnifferMenuBar";
@@ -317,6 +319,9 @@ struct ScanJob
 struct ViewState
 {
     HWND hwnd = nullptr;
+    HWND canvas = nullptr;
+    bool canvasTimer = false;
+    ss::ui::TreemapRenderer renderer;
     HWND editFilter = nullptr;
     std::wstring path;
     std::wstring title;
@@ -465,25 +470,59 @@ static ViewState* CurrentView()
 
 static Tree& ActiveTree(ViewState* v) { return (v->usingFiltered && v->filtered.Valid(v->filtered.root)) ? v->filtered : v->tree; }
 
+static int ViewCanvasTop(const ViewState* v) { return v->filterVisible ? S(64) : S(30); }
+
+static double AnimationTimeMs()
+{
+    using namespace std::chrono;
+    return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
+
+static void SetCanvasTimer(ViewState* v, bool running)
+{
+    if (!v->canvas || running == v->canvasTimer) return;
+    if (running)
+        v->canvasTimer = SetTimer(v->canvas, 1, 16, nullptr) != 0;
+    else {
+        KillTimer(v->canvas, 1);
+        v->canvasTimer = false;
+    }
+}
+
+static void CancelViewAnimation(ViewState* v)
+{
+    SetCanvasTimer(v, false);
+    ss::ui::TreemapAnimCancel(v->hwnd);
+}
+
+static void SyncCanvas(ViewState* v, const RECT& rc)
+{
+    if (!v->canvas) return;
+    int top = ViewCanvasTop(v);
+    if (v->scanning || rc.right <= 0 || rc.bottom <= top) {
+        ShowWindow(v->canvas, SW_HIDE);
+        v->renderer.Reset();
+        return;
+    }
+    SetWindowPos(v->canvas, nullptr, 0, top, rc.right, rc.bottom - top,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
 static RECT ComputeViewLayoutArea(ViewState* v, const RECT& clientRc)
 {
     int pad = S(8);
-    int top = (v && v->filterVisible) ? S(64) : S(30);   // (filter row) + breadcrumb
-    return RECT{ pad, top, clientRc.right - pad, clientRc.bottom - pad };
+    return RECT{ pad, ViewCanvasTop(v), clientRc.right - pad, clientRc.bottom - pad };
 }
 
 static void RelayoutView(ViewState* v)
 {
     if (!v) return;
-    if (v->hwnd)
-    {
-        KillTimer(v->hwnd, 2);
-        ss::ui::TreemapAnimCancel(v->hwnd);
-    }
+    if (v->hwnd) CancelViewAnimation(v);
     v->boxes.clear();
     if (!v->hwnd) return;
     RECT rc;
     GetClientRect(v->hwnd, &rc);
+    SyncCanvas(v, rc);
     v->lastW = rc.right;
     v->lastH = rc.bottom;
     RECT lay = ComputeViewLayoutArea(v, rc);
@@ -541,23 +580,49 @@ static void NavigateFocus(ViewState* v, uint32_t newFocus)
         int animMs = (!g_cfg.useDynaSmooth || g_cfg.zoomTimeMs <= 0)
             ? 0
             : (g_cfg.zoomTimeMs == 250 ? 180 : std::clamp(g_cfg.zoomTimeMs, 50, 1000));
-        if (animMs > 0 && !oldBoxes.empty() && !v->boxes.empty())
+        if (v->canvas && animMs > 0 && !oldBoxes.empty() && !v->boxes.empty())
         {
             RECT rc{};
             GetClientRect(v->hwnd, &rc);
             RECT lay = ComputeViewLayoutArea(v, rc);
-            if (ss::ui::TreemapAnimStart(v->hwnd, t, oldFocus, v->focus, lay,
-                                         oldBoxes, v->boxes, GetTickCount64(), animMs))
-            {
-                SetTimer(v->hwnd, 2, 16, nullptr);
-            }
+            ss::ui::TreemapAnimStart(v->hwnd, t, oldFocus, v->focus, lay,
+                                     oldBoxes, v->boxes, AnimationTimeMs(), animMs);
         }
         InvalidateRect(v->hwnd, nullptr, FALSE);
     }
 }
 
-static void DrawView(ViewState* v, HDC target, const RECT& rc)
+static ss::ui::TreemapStyle ViewTreemapStyle()
 {
+    ss::ui::TreemapStyle st;
+    st.dark = g_pal.dark;
+    st.bg = g_pal.canvas;
+    st.driveColor = g_cfg.driveColor;
+    st.folderColor = g_cfg.folderColor;
+    st.fileColor = g_cfg.fileColor;
+    st.freeColor = g_cfg.freeColor;
+    st.unknownColor = g_cfg.unknownColor;
+    st.accent = g_pal.accent;
+    st.text = g_pal.text;
+    st.textDim = g_pal.textDim;
+    st.levelContrast = g_cfg.levelContrast;
+    st.borderContrast = g_cfg.borderContrast;
+    st.fontSize = g_cfg.fontSize;
+    st.dpi = g_dpi;
+    st.showFileClassColors = (g_cfg.initialStyle == L"File Classes");
+    st.classes = &g_cfg.classes.items;
+    return st;
+}
+
+static ss::ui::TreemapOverlay ViewTreemapOverlay(const ViewState* v)
+{
+    return { v->hover, v->selected, v->mouseX, v->mouseY, g_cfg.showTooltipDate, g_cfg.showTooltipAge };
+}
+
+static void DrawView(ViewState* v, HDC target, RECT rc)
+{
+    if (v->canvas && !v->scanning)
+        rc.bottom = std::min<int>(rc.bottom, ViewCanvasTop(v));
     int W = rc.right, H = rc.bottom;
     if (W <= 0 || H <= 0) return;
     HDC mem = CreateCompatibleDC(target);
@@ -620,41 +685,9 @@ static void DrawView(ViewState* v, HDC target, const RECT& rc)
         TextAt(mem, crumb, RECT{ S(10), cy, right, cy + S(20) }, g_pal.textDim, g_fontSmall);
     }
 
-    // ---- treemap canvas (module: src/ui_treemap.cpp)
-    int canvasTop = v->filterVisible ? S(64) : S(30);
-    {
-        ss::ui::TreemapStyle st;
-        st.dark = g_pal.dark;
-        st.bg = g_pal.canvas;
-        st.driveColor = g_cfg.driveColor;
-        st.folderColor = g_cfg.folderColor;
-        st.fileColor = g_cfg.fileColor;
-        st.freeColor = g_cfg.freeColor;
-        st.unknownColor = g_cfg.unknownColor;
-        st.accent = g_pal.accent;
-        st.text = g_pal.text;
-        st.textDim = g_pal.textDim;
-        st.levelContrast = g_cfg.levelContrast;
-        st.borderContrast = g_cfg.borderContrast;
-        st.fontSize = g_cfg.fontSize;
-        st.dpi = g_dpi;
-        st.showFileClassColors = (g_cfg.initialStyle == L"File Classes");
-        st.classes = &g_cfg.classes.items;
-
-        RECT canvasRect{ 0, canvasTop, W, H };
-        if (const auto* animBoxes = ss::ui::TreemapAnimCurrentBoxes(v->hwnd))
-        {
-            ss::ui::DrawTreemap(mem, canvasRect, t, *animBoxes, st, Node::kNone, Node::kNone);
-            ss::ui::DrawTreemapAnimExiting(mem, v->hwnd, canvasRect, t, st);
-        }
-        else
-        {
-            ss::ui::DrawTreemap(mem, canvasRect, t, v->boxes, st, v->hover, v->selected);
-            if (v->hover != Node::kNone && t.Valid(v->hover) && v->mouseX >= 0)
-                ss::ui::DrawTreemapTooltip(mem, canvasRect, t, v->hover, v->mouseX, v->mouseY, st,
-                                           g_cfg.showTooltipDate, g_cfg.showTooltipAge);
-        }
-    }
+    if (!v->canvas)
+        ss::ui::DrawTreemapFrame(mem, v->hwnd, RECT{ 0, ViewCanvasTop(v), W, H },
+                                 t, v->boxes, ViewTreemapStyle(), ViewTreemapOverlay(v));
 
     BitBlt(target, 0, 0, W, H, mem, 0, 0, SRCCOPY);
     SelectObject(mem, old);
@@ -714,8 +747,11 @@ static void StartScan(ViewState* v, const std::wstring& path)
     v->hover = Node::kNone;
     if (v->hwnd)
     {
-        KillTimer(v->hwnd, 2);
-        ss::ui::TreemapAnimCancel(v->hwnd);
+        CancelViewAnimation(v);
+        RECT rc{};
+        GetClientRect(v->hwnd, &rc);
+        SyncCanvas(v, rc);
+        InvalidateRect(v->hwnd, nullptr, FALSE);
     }
     v->boxes.clear();
     v->lastReportedFiles = -1;
@@ -788,6 +824,84 @@ static void FinishScan(ViewState* v)
     RefreshMain();
 }
 
+static void DrawCanvasGdi(HDC dc, ViewState* v, const RECT& area, const Tree& tree,
+                          const ss::ui::TreemapStyle& style, const ss::ui::TreemapOverlay& overlay)
+{
+    int width = area.right;
+    int height = area.bottom - area.top;
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP bitmap = mem ? CreateCompatibleBitmap(dc, width, height) : nullptr;
+    HGDIOBJ previous = bitmap ? SelectObject(mem, bitmap) : nullptr;
+    HDC target = previous ? mem : dc;
+    POINT origin{};
+    SetViewportOrgEx(target, 0, -area.top, &origin);
+    ss::ui::DrawTreemapFrame(target, v->hwnd, area, tree, v->boxes, style, overlay);
+    SetViewportOrgEx(target, origin.x, origin.y, nullptr);
+    if (previous) {
+        BitBlt(dc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, previous);
+    }
+    if (bitmap) DeleteObject(bitmap);
+    if (mem) DeleteDC(mem);
+}
+
+static LRESULT CALLBACK CanvasProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    auto* v = reinterpret_cast<ViewState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg)
+    {
+        case WM_NCCREATE:
+        {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+            return TRUE;
+        }
+        case WM_NCHITTEST: return HTTRANSPARENT;
+        case WM_ERASEBKGND: return 1;
+        case WM_TIMER:
+            if (wp == 1) {
+                if (v && v->canvasTimer) InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            break;
+        case WM_PAINT:
+        {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            bool nextFrame = false;
+            auto present = ss::ui::TreemapPresent::Occluded;
+            if (v && !v->scanning && rc.right > 0 && rc.bottom > 0 &&
+                IsWindowVisible(hwnd) && !IsIconic(GetAncestor(hwnd, GA_ROOT))) {
+                nextFrame = ss::ui::TreemapAnimTick(v->hwnd, AnimationTimeMs());
+                int top = ViewCanvasTop(v);
+                RECT area{ 0, top, rc.right, top + rc.bottom };
+                const Tree& tree = ActiveTree(v);
+                auto style = ViewTreemapStyle();
+                auto overlay = ViewTreemapOverlay(v);
+                present = v->renderer.Draw(hwnd, dc, v->hwnd, area, tree, v->boxes, style, overlay);
+                if (present == ss::ui::TreemapPresent::Fallback)
+                    DrawCanvasGdi(dc, v, area, tree, style, overlay);
+            }
+            EndPaint(hwnd, &ps);
+            bool vsynced = present == ss::ui::TreemapPresent::Presented;
+            if (v) SetCanvasTimer(v, nextFrame && !vsynced);
+            // EndDraw presents at the display refresh. Keep one paint pending during zoom.
+            if (nextFrame && vsynced) InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_DESTROY:
+            if (v) {
+                SetCanvasTimer(v, false);
+                v->renderer.Reset();
+                v->canvas = nullptr;
+            }
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
 // ---------------------------------------------------------------- view window proc
 static LRESULT CALLBACK ViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -807,6 +921,8 @@ static LRESULT CALLBACK ViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SendMessageW(v->editFilter, WM_SETFONT, (WPARAM)g_fontMono, TRUE);
             SendMessageW(v->editFilter, EM_SETCUEBANNER, TRUE, (LPARAM)L"*.iso;>1gb;>2weeks;:red");
             ShowWindow(v->editFilter, SW_HIDE);
+            v->canvas = CreateWindowExW(0, kCanvasClass, L"", WS_CHILD, 0, 0, 0, 0,
+                                        hwnd, nullptr, cs->hInstance, v);
             return 0;
         }
         case WM_SIZE:
@@ -832,9 +948,16 @@ static LRESULT CALLBACK ViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 DrawView(v, dc, rc);
             }
             EndPaint(hwnd, &ps);
+            if (v && v->canvas && !v->scanning) InvalidateRect(v->canvas, nullptr, FALSE);
             return 0;
         }
         case WM_ERASEBKGND: return 1;
+        case WM_SHOWWINDOW:
+            if (!wp && v && v->canvas) {
+                CancelViewAnimation(v);
+                v->renderer.Reset();
+            }
+            break;
 
         case WM_CTLCOLOREDIT:
         {
@@ -859,8 +982,10 @@ static LRESULT CALLBACK ViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             bool moved = (x != v->mouseX || y != v->mouseY);
             v->mouseX = x; v->mouseY = y;
             uint32_t hit = HitTest(v, x, y);
-            if (hit != v->hover) { v->hover = hit; InvalidateRect(hwnd, nullptr, FALSE); }
-            else if (moved && hit != Node::kNone) InvalidateRect(hwnd, nullptr, FALSE);
+            if (hit != v->hover || (moved && hit != Node::kNone)) {
+                v->hover = hit;
+                InvalidateRect(v->canvas ? v->canvas : hwnd, nullptr, FALSE);
+            }
             return 0;
         }
         case WM_MOUSELEAVE:
@@ -957,12 +1082,6 @@ static LRESULT CALLBACK ViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     }
                 }
             }
-            else if (v && wp == 2)
-            {
-                bool cont = ss::ui::TreemapAnimTick(hwnd, GetTickCount64());
-                if (!cont) KillTimer(hwnd, 2);
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
             return 0;
 
         case WM_DPICHANGED:
@@ -971,9 +1090,10 @@ static LRESULT CALLBACK ViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
         case WM_DESTROY:
             KillTimer(hwnd, 1);
-            KillTimer(hwnd, 2);
-            ss::ui::TreemapAnimCancel(hwnd);
-            if (v) v->hwnd = nullptr;
+            if (v) {
+                CancelViewAnimation(v);
+                v->hwnd = nullptr;
+            }
             return 0;
 
         case WM_NCDESTROY:
@@ -3839,6 +3959,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int show)
     wc.lpfnWndProc = ViewProc;
     wc.lpszClassName = kViewClass;
     wc.style = CS_DBLCLKS | CS_HREDRAW | CS_VREDRAW;
+    RegisterClassExW(&wc);
+
+    wc.lpfnWndProc = CanvasProc;
+    wc.lpszClassName = kCanvasClass;
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     RegisterClassExW(&wc);
 
     wc.lpfnWndProc = StartProc;

@@ -51,7 +51,7 @@ $common = @(
 $guiLibs = @(
     "-lgdi32", "-luser32", "-lcomctl32", "-ldwmapi", "-lshell32", "-lole32",
     "-luxtheme", "-lshlwapi", "-ladvapi32", "-lmsimg32", "-lversion", "-lcomdlg32",
-    "-lgdiplus", "-lwinmm", "-lpathcch", "-luuid"
+    "-lgdiplus", "-lwinmm", "-lpathcch", "-luuid", "-ld2d1", "-ldwrite"
 )
 
 $consoleLibs = @(

@@ -1,13 +1,24 @@
 #include "ui_treemap.h"
 #include "i18n.h"
+#include <d2d1.h>
+#include <dwrite.h>
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <type_traits>
 
 namespace ss::ui {
 namespace {
+
+struct ReleaseCom
+{
+    void operator()(IUnknown* object) const { object->Release(); }
+};
+
+template<typename T>
+using ComPtr = std::unique_ptr<T, ReleaseCom>;
 
 // ============================================================================
 // 公共基础数学与几何工具（不依赖 <cmath>，规避 <windows.h> min/max 宏冲突）
@@ -683,6 +694,8 @@ struct GdiCache
 
     HFONT fontTipTitle = nullptr;
     HFONT fontTipBody  = nullptr;
+    std::array<HFONT, 2 * kFontTierCount + 2> writeFonts{};
+    std::array<ComPtr<IDWriteTextFormat>, 2 * kFontTierCount + 2> writeFormats;
     int   hTipTitle    = 18;
     int   hTipBody     = 15;
 
@@ -725,6 +738,8 @@ struct GdiCache
 
     void DestroyFonts()
     {
+        writeFonts.fill(nullptr);
+        for (auto& format : writeFormats) format.reset();
         auto del = [](HFONT& f) {
             if (f) { DeleteObject(f); f = nullptr; }
         };
@@ -828,6 +843,45 @@ struct GdiCache
 
         cachedDpi    = dpi;
         cachedBasePt = basePt;
+    }
+
+    bool EnsureWriteFormats()
+    {
+        if (writeFormats.front()) return true;
+        static auto factory = [] {
+            IDWriteFactory* ptr = nullptr;
+            DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                reinterpret_cast<IUnknown**>(&ptr));
+            return ComPtr<IDWriteFactory>(ptr);
+        }();
+        if (!factory) return false;
+
+        for (int i = 0; i < kFontTierCount; ++i) {
+            writeFonts[2 * i] = regFont[i];
+            writeFonts[2 * i + 1] = semiFont[i];
+        }
+        writeFonts[2 * kFontTierCount] = fontTipTitle;
+        writeFonts[2 * kFontTierCount + 1] = fontTipBody;
+
+        DWRITE_TRIMMING trim{ DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+        decltype(writeFormats) formats;
+        for (size_t i = 0; i < formats.size(); ++i) {
+            LOGFONTW font{};
+            if (!GetObjectW(writeFonts[i], sizeof(font), &font)) return false;
+            IDWriteTextFormat* rawFormat = nullptr;
+            if (FAILED(factory->CreateTextFormat(font.lfFaceName, nullptr,
+                    static_cast<DWRITE_FONT_WEIGHT>(font.lfWeight), DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL, static_cast<float>(-font.lfHeight),
+                    L"", &rawFormat))) return false;
+            formats[i].reset(rawFormat);
+            IDWriteInlineObject* rawSign = nullptr;
+            if (FAILED(factory->CreateEllipsisTrimmingSign(rawFormat, &rawSign))) return false;
+            ComPtr<IDWriteInlineObject> sign(rawSign);
+            if (FAILED(rawFormat->SetTrimming(&trim, sign.get())) ||
+                FAILED(rawFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP))) return false;
+        }
+        writeFormats = std::move(formats);
+        return true;
     }
 
     bool EnsureAlphaPixel()
@@ -1418,8 +1472,8 @@ struct AnimTrack
 struct AnimSession
 {
     HWND     hwnd       = nullptr;
-    uint64_t startMs    = 0;
-    uint64_t durationMs = 180;
+    double startMs = 0;
+    int durationMs = 180;
     double   easeT      = 0.0;
 
     std::vector<AnimTrack>  activeTracks; // 匹配节点 + 新展开节点
@@ -1519,26 +1573,175 @@ void LayoutTreemap(const ss::Tree& tree, uint32_t focusNode,
     CollectNestedBoxes(tree, focusNode, 0, x, y, w, h, opt, outBoxes);
 }
 
-void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
+namespace {
+
+D2D1_RECT_F FloatRect(const RECT& r)
+{
+    return D2D1::RectF(static_cast<float>(r.left), static_cast<float>(r.top),
+                       static_cast<float>(r.right), static_cast<float>(r.bottom));
+}
+
+struct TreemapPaint
+{
+    HDC dc;
+    ID2D1RenderTarget* target = nullptr;
+    ID2D1SolidColorBrush* brush = nullptr;
+    FastBrushState gdiBrush;
+    HFONT font = nullptr;
+    COLORREF textColor = CLR_INVALID;
+    IDWriteTextFormat* format = nullptr;
+
+    void SetBrush(COLORREF color, BYTE alpha = 255)
+    {
+        brush->SetColor(D2D1::ColorF(GetRValue(color) / 255.0f, GetGValue(color) / 255.0f,
+                                    GetBValue(color) / 255.0f, alpha / 255.0f));
+    }
+
+    void Fill(const RECT& r, COLORREF color)
+    {
+        if (target) {
+            SetBrush(color);
+            target->FillRectangle(FloatRect(r), brush);
+        } else {
+            gdiBrush.Fill(dc, r, color);
+        }
+    }
+
+    void FillAlpha(const RECT& r, COLORREF color, BYTE alpha)
+    {
+        if (target) {
+            SetBrush(color, alpha);
+            target->FillRectangle(FloatRect(r), brush);
+        } else {
+            FillRectAlpha(dc, r, color, alpha);
+        }
+    }
+
+    void Stroke(const RECT& r, COLORREF color, double width, int dpi)
+    {
+        if (!target) {
+            DrawFractionalInnerStroke(dc, r, color, width, dpi);
+            return;
+        }
+        float half = static_cast<float>(width * dpi / 192.0);
+        if (RectW(r) <= 4 * half || RectH(r) <= 4 * half) {
+            Fill(r, color);
+            return;
+        }
+        auto rect = FloatRect(r);
+        rect.left += half;
+        rect.top += half;
+        rect.right -= half;
+        rect.bottom -= half;
+        SetBrush(color);
+        target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        target->DrawRectangle(rect, brush, 2 * half);
+        target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+    }
+
+    void Tag(int x, int y, int diameter, COLORREF color, COLORREF rim)
+    {
+        if (!target) {
+            DrawTagDotAA(dc, x, y, diameter, color, rim);
+            return;
+        }
+        float radius = diameter / 2.0f;
+        auto center = D2D1::Point2F(x + radius, y + radius);
+        target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        SetBrush(rim);
+        target->FillEllipse(D2D1::Ellipse(center, radius, radius), brush);
+        SetBrush(color);
+        target->FillEllipse(D2D1::Ellipse(center, radius - 1, radius - 1), brush);
+        target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+    }
+
+    void TooltipSurface(const RECT& r, int radius, int border, int shadow,
+                        COLORREF background, COLORREF outline, bool dark)
+    {
+        if (!target) {
+            DrawTooltipCardSurface(dc, r, radius, border, shadow, background, outline, dark);
+            return;
+        }
+        target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        auto rect = FloatRect(r);
+        auto shadowRect = D2D1::RectF(rect.left - shadow, rect.top + shadow,
+                                     rect.right + shadow, rect.bottom + 2 * shadow);
+        SetBrush(RGB(0, 0, 0), dark ? 105 : 48);
+        target->FillRoundedRectangle(D2D1::RoundedRect(shadowRect, radius, radius), brush);
+        SetBrush(outline);
+        target->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), brush);
+        auto inner = D2D1::RectF(rect.left + border, rect.top + border,
+                                rect.right - border, rect.bottom - border);
+        float innerRadius = static_cast<float>(MaxVal(0, radius - border));
+        SetBrush(background);
+        target->FillRoundedRectangle(D2D1::RoundedRect(inner, innerRadius, innerRadius), brush);
+        target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+    }
+
+    void Font(HFONT value)
+    {
+        if (value == font || !value) return;
+        font = value;
+        if (!target) {
+            SelectObject(dc, value);
+            return;
+        }
+        auto& cache = GetGdiCache();
+        auto it = std::find(cache.writeFonts.begin(), cache.writeFonts.end(), value);
+        format = it == cache.writeFonts.end() ? nullptr
+            : cache.writeFormats[it - cache.writeFonts.begin()].get();
+    }
+
+    void TextColor(COLORREF value)
+    {
+        if (value == textColor) return;
+        textColor = value;
+        if (!target) SetTextColor(dc, value);
+    }
+
+    void Text(const wchar_t* value, int length, RECT r, UINT flags)
+    {
+        if (!target) {
+            DrawTextW(dc, value, length, &r, flags);
+            return;
+        }
+        if (!format || !length || r.right <= r.left || r.bottom <= r.top) return;
+        format->SetTextAlignment(flags & DT_CENTER ? DWRITE_TEXT_ALIGNMENT_CENTER
+            : flags & DT_RIGHT ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
+        format->SetParagraphAlignment(flags & DT_VCENTER ? DWRITE_PARAGRAPH_ALIGNMENT_CENTER
+            : DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        SetBrush(textColor);
+        // Preserve the tail of long paths in the tooltip.
+        if (flags & DT_PATH_ELLIPSIS) {
+            DWRITE_TRIMMING trim{};
+            ComPtr<IDWriteInlineObject> sign;
+            IDWriteInlineObject* rawSign = nullptr;
+            format->GetTrimming(&trim, &rawSign);
+            sign.reset(rawSign);
+            trim.delimiter = L'\\';
+            trim.delimiterCount = 1;
+            if (sign) format->SetTrimming(&trim, sign.get());
+            target->DrawText(value, length, format, FloatRect(r), brush,
+                             D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_GDI_CLASSIC);
+            trim.delimiter = 0;
+            trim.delimiterCount = 0;
+            if (sign) format->SetTrimming(&trim, sign.get());
+            return;
+        }
+        target->DrawText(value, length, format, FloatRect(r), brush,
+                         D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_GDI_CLASSIC);
+    }
+};
+
+void DrawTreemap(TreemapPaint& paint, const RECT& area, const ss::Tree& tree,
                  const std::vector<TreemapBox>& boxes, const TreemapStyle& style,
                  uint32_t hoverNode, uint32_t selectedNode)
 {
-    if (!dc || area.right <= area.left || area.bottom <= area.top) return;
-
-    int saved = SaveDC(dc);
-    IntersectClipRect(dc, area.left, area.top, area.right, area.bottom);
-
-    FastBrushState fb;
-    fb.Fill(dc, area, style.bg);
-
-    if (boxes.empty()) {
-        if (saved) RestoreDC(dc, saved);
-        return;
-    }
+    paint.Fill(area, style.bg);
+    if (boxes.empty()) return;
 
     const int dpi = (style.dpi > 0) ? style.dpi : 96;
     GdiCache& cache = GetGdiCache();
-    cache.EnsureFonts(dc, dpi, style.fontSize);
 
     // 1) 过滤可见矩形、整数对齐（Round(x+w) 消除相邻拼缝），并复用静态暂存缓冲
     RenderScratch& scratch = GetRenderScratch();
@@ -1577,10 +1780,7 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
         items.push_back(sb);
     }
 
-    if (items.empty()) {
-        if (saved) RestoreDC(dc, saved);
-        return;
-    }
+    if (items.empty()) return;
 
     // 按 depth 升序稳定排序：确保父容器先画、子项后画
     std::stable_sort(items.begin(), items.end(), [](const SnappedBox& a, const SnappedBox& b) {
@@ -1628,11 +1828,11 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
 
         if (bc > 0 && w >= 3 && h >= 3) {
             COLORREF borderCol = BlendColor(sb.fill, seamTarget, outerSeamStr);
-            fb.Fill(dc, sb.rc, borderCol);
+            paint.Fill(sb.rc, borderCol);
             RECT inner{ sb.rc.left + 1, sb.rc.top + 1, sb.rc.right - 1, sb.rc.bottom - 1 };
-            fb.Fill(dc, inner, sb.fill);
+            paint.Fill(inner, sb.fill);
         } else {
-            fb.Fill(dc, sb.rc, sb.fill);
+            paint.Fill(sb.rc, sb.fill);
         }
 
         if (sb.hasDrawnChildren && w >= 8 && h >= 18) {
@@ -1641,7 +1841,7 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
             // 1) 顶部标题带（加深 8%）
             if (geom.headerRect.right > geom.headerRect.left &&
                 geom.headerRect.bottom > geom.headerRect.top) {
-                fb.Fill(dc, geom.headerRect, sb.headerBg);
+                paint.Fill(geom.headerRect, sb.headerBg);
             }
 
             // 2) 容器子区边界 1px 深色缝（紧贴外框彩色边内侧，与子项外框对齐）
@@ -1649,7 +1849,7 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
             int wh = RectH(geom.childWellRect);
             if (ww >= 3 && wh >= 3) {
                 COLORREF innerSeamCol = BlendColor(sb.fill, seamTarget, innerSeamStr);
-                fb.Fill(dc, geom.childWellRect, innerSeamCol);
+                paint.Fill(geom.childWellRect, innerSeamCol);
                 RECT wellInner{
                     geom.childWellRect.left + 1,
                     geom.childWellRect.top + 1,
@@ -1657,7 +1857,7 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
                     geom.childWellRect.bottom - 1
                 };
                 COLORREF wellBg = BlendColor(sb.fill, style.bg, style.dark ? 0.16 : 0.10);
-                fb.Fill(dc, wellInner, wellBg);
+                paint.Fill(wellInner, wellBg);
             }
         }
     }
@@ -1667,21 +1867,6 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
     //   - 容器（hasDrawnChildren）：标题带左对齐 semibold 名字 + 右对齐小一号大小
     //   - 叶子（!hasDrawnChildren）：整块垂直+水平居中绘制（名字 + 可选第二行大小）
     // ------------------------------------------------------------------------
-    SetBkMode(dc, TRANSPARENT);
-    HFONT curFont = nullptr;
-    COLORREF curTextCol = CLR_INVALID;
-    auto useFont = [&](HFONT f) {
-        if (f && f != curFont) {
-            SelectObject(dc, f);
-            curFont = f;
-        }
-    };
-    auto useTextCol = [&](COLORREF c) {
-        if (c != curTextCol) {
-            SetTextColor(dc, c);
-            curTextCol = c;
-        }
-    };
 
     const int hdrPadL     = ScalePx(4, dpi);   // 标题带左侧 4px 内边距
     const int hdrPadR     = ScalePx(4, dpi);
@@ -1714,7 +1899,7 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
             if (tag >= 1 && tag <= 4 && hdrW >= dotDia + hdrPadR * 2 + 8 && hdrH >= dotDia + 2) {
                 int bx = hdr.right - hdrPadR - dotDia;
                 int by = hdr.top + (hdrH - dotDia) / 2;
-                DrawTagDotAA(dc, bx, by, dotDia, TagBadgeColor(tag), dotRim);
+                paint.Tag(bx, by, dotDia, TagBadgeColor(tag), dotRim);
                 rightEdge = bx - hdrPadR;
             }
 
@@ -1751,9 +1936,9 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
                     int szLeft = MaxVal(leftEdge, rightEdge - szBoxW);
                     RECT szRc{ szLeft, hdr.top, rightEdge, hdr.bottom };
                     COLORREF secCol = ComputeLabelSecondaryColor(sb.headerBg, primaryCol, style.textDim);
-                    useFont(cache.regFont[sizeTier]);
-                    useTextCol(secCol);
-                    DrawTextW(dc, szText.c_str(), static_cast<int>(szText.size()), &szRc,
+                    paint.Font(cache.regFont[sizeTier]);
+                    paint.TextColor(secCol);
+                    paint.Text(szText.c_str(), static_cast<int>(szText.size()), szRc,
                               DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
                     nameRight = szRc.left - hdrSizeGap;
                 }
@@ -1769,9 +1954,9 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
 
             if (nameAvailW >= cache.min3FloorW[kFontTierCount - 1]) {
                 RECT nameRc{ leftEdge, hdr.top, nameRight, hdr.bottom };
-                useFont(cache.semiFont[nameTier]);
-                useTextCol(primaryCol);
-                DrawTextW(dc, nameSpan.data, static_cast<int>(nameSpan.len), &nameRc,
+                paint.Font(cache.semiFont[nameTier]);
+                paint.TextColor(primaryCol);
+                paint.Text(nameSpan.data, static_cast<int>(nameSpan.len), nameRc,
                           DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             }
             continue;
@@ -1782,7 +1967,7 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
         if (tag >= 1 && tag <= 4 && w >= dotDia + dotMargin * 2 && h >= dotDia + dotMargin * 2) {
             int bx = sb.rc.right - dotMargin - dotDia;
             int by = sb.rc.top + dotMargin;
-            DrawTagDotAA(dc, bx, by, dotDia, TagBadgeColor(tag), dotRim);
+            paint.Tag(bx, by, dotDia, TagBadgeColor(tag), dotRim);
             drewLeafBadge = true;
         }
 
@@ -1839,23 +2024,23 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
             int startY = innerT + (availH - totalH) / 2;
 
             RECT r1{ innerL, startY, innerR, startY + nameH };
-            useFont(nameFont);
-            useTextCol(primaryCol);
-            DrawTextW(dc, nameSpan.data, static_cast<int>(nameSpan.len), &r1,
+            paint.Font(nameFont);
+            paint.TextColor(primaryCol);
+            paint.Text(nameSpan.data, static_cast<int>(nameSpan.len), r1,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
             RECT r2{ innerL, startY + nameH + lineGap, innerR, startY + totalH };
             COLORREF secCol = ComputeLabelSecondaryColor(sb.fill, primaryCol, style.textDim);
-            useFont(cache.regFont[sizeTier]);
-            useTextCol(secCol);
-            DrawTextW(dc, szText.c_str(), static_cast<int>(szText.size()), &r2,
+            paint.Font(cache.regFont[sizeTier]);
+            paint.TextColor(secCol);
+            paint.Text(szText.c_str(), static_cast<int>(szText.size()), r2,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         } else {
             // 单行垂直+水平居中
             RECT r1{ innerL, innerT, innerR, innerB };
-            useFont(nameFont);
-            useTextCol(primaryCol);
-            DrawTextW(dc, nameSpan.data, static_cast<int>(nameSpan.len), &r1,
+            paint.Font(nameFont);
+            paint.TextColor(primaryCol);
+            paint.Text(nameSpan.data, static_cast<int>(nameSpan.len), r1,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
     }
@@ -1873,30 +2058,28 @@ void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
         };
         COLORREF tintCol   = style.dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x00, 0x00, 0x00);
         BYTE     tintAlpha = style.dark ? 26 : 18;
-        FillRectAlpha(dc, clipped, tintCol, tintAlpha);
+        paint.FillAlpha(clipped, tintCol, tintAlpha);
 
         COLORREF hoverStroke = style.dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x14, 0x14, 0x18);
-        DrawFractionalInnerStroke(dc, hb.rc, hoverStroke, 1.5, dpi);
+        paint.Stroke(hb.rc, hoverStroke, 1.5, dpi);
     }
 
     if (selectedItemIdx >= 0) {
         const SnappedBox& sb = items[static_cast<size_t>(selectedItemIdx)];
-        DrawFractionalInnerStroke(dc, sb.rc, style.accent, 2.5, dpi);
+        paint.Stroke(sb.rc, style.accent, 2.5, dpi);
     }
 
-    if (saved) RestoreDC(dc, saved);
 }
 
-void DrawTreemapTooltip(HDC dc, const RECT& area, const ss::Tree& tree, uint32_t node,
+void DrawTreemapTooltip(TreemapPaint& paint, const RECT& area, const ss::Tree& tree, uint32_t node,
                         int mouseX, int mouseY, const TreemapStyle& style,
                         bool showDateTime, bool showAge)
 {
-    if (!dc || node == ss::Node::kNone || !tree.Valid(node)) return;
+    if (node == ss::Node::kNone || !tree.Valid(node)) return;
     if (area.right <= area.left || area.bottom <= area.top) return;
 
     const int dpi = (style.dpi > 0) ? style.dpi : 96;
     GdiCache& cache = GetGdiCache();
-    cache.EnsureFonts(dc, dpi, style.fontSize);
 
     const ss::Node& n = tree.nodes[node];
 
@@ -1955,10 +2138,10 @@ void DrawTreemapTooltip(HDC dc, const RECT& area, const ss::Tree& tree, uint32_t
     int dotDia = MaxVal(5, ScalePx(7, dpi));
     int titleExtraW = showTagDot ? (dotDia + ScalePx(8, dpi)) : 0;
 
-    int w1 = MeasureTextWidth(dc, cache.fontTipTitle, line1) + titleExtraW;
-    int w2 = MeasureTextWidth(dc, cache.fontTipBody,  line2);
-    int w3 = MeasureTextWidth(dc, cache.fontTipBody,  line3);
-    int w4 = MeasureTextWidth(dc, cache.fontTipBody,  line4);
+    int w1 = MeasureTextWidth(paint.dc, cache.fontTipTitle, line1) + titleExtraW;
+    int w2 = MeasureTextWidth(paint.dc, cache.fontTipBody,  line2);
+    int w3 = MeasureTextWidth(paint.dc, cache.fontTipBody,  line3);
+    int w4 = MeasureTextWidth(paint.dc, cache.fontTipBody,  line4);
 
     int contentW = MaxVal(MaxVal(w1, w2), MaxVal(w3, w4));
     int cardW = ClampVal(contentW + padX * 2, MinVal(ScalePx(180, dpi), maxCardW), maxCardW);
@@ -1982,9 +2165,6 @@ void DrawTreemapTooltip(HDC dc, const RECT& area, const ss::Tree& tree, uint32_t
 
     RECT cardRect{ x, y, x + cardW, y + cardH };
 
-    int saved = SaveDC(dc);
-    IntersectClipRect(dc, area.left, area.top, area.right, area.bottom);
-
     COLORREF panelBg = style.dark
         ? BlendColor(style.bg, RGB(0x2A, 0x2C, 0x35), 0.78)
         : BlendColor(style.bg, RGB(0xFF, 0xFF, 0xFF), 0.88);
@@ -1996,53 +2176,53 @@ void DrawTreemapTooltip(HDC dc, const RECT& area, const ss::Tree& tree, uint32_t
         titleCol = style.dark ? RGB(0xF4, 0xF4, 0xF7) : RGB(0x16, 0x18, 0x1E);
     }
 
-    DrawTooltipCardSurface(dc, cardRect, radiusPx, borderPx, shadowPx,
+    paint.TooltipSurface(cardRect, radiusPx, borderPx, shadowPx,
                            panelBg, panelBorder, style.dark);
 
-    SetBkMode(dc, TRANSPARENT);
     int textL = cardRect.left + padX;
     int textR = cardRect.right - padX;
     int curY  = cardRect.top + padY;
 
     RECT r1{ textL, curY, textR - titleExtraW, curY + cache.hTipTitle };
-    SelectObject(dc, cache.fontTipTitle);
-    SetTextColor(dc, titleCol);
-    DrawTextW(dc, line1.c_str(), static_cast<int>(line1.size()), &r1,
+    paint.Font(cache.fontTipTitle);
+    paint.TextColor(titleCol);
+    paint.Text(line1.c_str(), static_cast<int>(line1.size()), r1,
               DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     if (showTagDot) {
         int bx = textR - dotDia;
         int by = curY + (cache.hTipTitle - dotDia) / 2;
-        DrawTagDotAA(dc, bx, by, dotDia, TagBadgeColor(tag), panelBg);
+        paint.Tag(bx, by, dotDia, TagBadgeColor(tag), panelBg);
     }
     curY += cache.hTipTitle;
 
-    SelectObject(dc, cache.fontTipBody);
+    paint.Font(cache.fontTipBody);
     if (!line2.empty()) {
         curY += gap12;
         RECT r2{ textL, curY, textR, curY + cache.hTipBody };
-        SetTextColor(dc, style.textDim);
-        DrawTextW(dc, line2.c_str(), static_cast<int>(line2.size()), &r2,
+        paint.TextColor(style.textDim);
+        paint.Text(line2.c_str(), static_cast<int>(line2.size()), r2,
                   DT_LEFT | DT_TOP | DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_END_ELLIPSIS | DT_NOPREFIX);
         curY += cache.hTipBody;
     }
 
     curY += gap23;
     RECT r3{ textL, curY, textR, curY + cache.hTipBody };
-    SetTextColor(dc, titleCol);
-    DrawTextW(dc, line3.c_str(), static_cast<int>(line3.size()), &r3,
+    paint.TextColor(titleCol);
+    paint.Text(line3.c_str(), static_cast<int>(line3.size()), r3,
               DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     curY += cache.hTipBody;
 
     if (!line4.empty()) {
         curY += gap34;
         RECT r4{ textL, curY, textR, curY + cache.hTipBody };
-        SetTextColor(dc, style.textDim);
-        DrawTextW(dc, line4.c_str(), static_cast<int>(line4.size()), &r4,
+        paint.TextColor(style.textDim);
+        paint.Text(line4.c_str(), static_cast<int>(line4.size()), r4,
                   DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
 
-    if (saved) RestoreDC(dc, saved);
 }
+
+} // namespace
 
 // ============================================================================
 // 缩放动画公开接口实现
@@ -2053,7 +2233,7 @@ bool TreemapAnimStart(HWND hwnd, const ss::Tree& tree,
                       const RECT& layoutArea,
                       const std::vector<TreemapBox>& oldBoxes,
                       const std::vector<TreemapBox>& newBoxes,
-                      uint64_t nowMs, int durationMs)
+                      double nowMs, int durationMs)
 {
     EraseAnimSession(hwnd);
 
@@ -2091,7 +2271,7 @@ bool TreemapAnimStart(HWND hwnd, const ss::Tree& tree,
     AnimSession sess{};
     sess.hwnd       = hwnd;
     sess.startMs    = nowMs;
-    sess.durationMs = static_cast<uint64_t>(ClampVal(durationMs, 30, 2000));
+    sess.durationMs = ClampVal(durationMs, 30, 2000);
     sess.activeTracks.reserve(newBoxes.size());
 
     FlatNodeMap trackMap;
@@ -2202,30 +2382,21 @@ bool TreemapAnimStart(HWND hwnd, const ss::Tree& tree,
     return true;
 }
 
-bool TreemapAnimTick(HWND hwnd, uint64_t nowMs)
+bool TreemapAnimTick(HWND hwnd, double nowMs)
 {
     AnimSession* sess = FindAnimSession(hwnd);
     if (!sess) return false;
 
-    if (nowMs <= sess->startMs) {
-        UpdateAnimCurrentBoxes(*sess, 0.0);
-        if (IsWindow(hwnd)) InvalidateRect(hwnd, nullptr, FALSE);
-        return true;
-    }
-
-    uint64_t elapsed = nowMs - sess->startMs;
+    double elapsed = nowMs - sess->startMs;
     if (elapsed >= sess->durationMs) {
-        // 动画结束：立刻释放全部中间数据，并触发末帧静态重绘
         EraseAnimSession(hwnd);
-        if (IsWindow(hwnd)) InvalidateRect(hwnd, nullptr, FALSE);
         return false;
     }
 
-    double t = static_cast<double>(elapsed) / static_cast<double>(sess->durationMs);
+    double t = elapsed / sess->durationMs;
     double inv = 1.0 - ClampVal(t, 0.0, 1.0);
     double easeOut = 1.0 - inv * inv * inv; // 1 - (1 - t)^3
     UpdateAnimCurrentBoxes(*sess, easeOut);
-    if (IsWindow(hwnd)) InvalidateRect(hwnd, nullptr, FALSE);
     return true;
 }
 
@@ -2240,10 +2411,11 @@ const std::vector<TreemapBox>* TreemapAnimCurrentBoxes(HWND hwnd)
     return sess ? &sess->currentBoxes : nullptr;
 }
 
-void DrawTreemapAnimExiting(HDC dc, HWND hwnd, const RECT& area,
+namespace {
+
+void DrawTreemapAnimExiting(TreemapPaint& paint, HWND hwnd, const RECT& area,
                             const ss::Tree& tree, const TreemapStyle& style)
 {
-    if (!dc || area.right <= area.left || area.bottom <= area.top) return;
     AnimSession* sess = FindAnimSession(hwnd);
     if (!sess || sess->exitTracks.empty()) return;
 
@@ -2253,8 +2425,6 @@ void DrawTreemapAnimExiting(HDC dc, HWND hwnd, const RECT& area,
     BYTE alpha = ClampByte(RoundInt(fade * 190.0));
     if (alpha < 4) return;
 
-    int saved = SaveDC(dc);
-    IntersectClipRect(dc, area.left, area.top, area.right, area.bottom);
 
     const double et = sess->easeT;
     for (const AnimTrack& tr : sess->exitTracks) {
@@ -2274,10 +2444,111 @@ void DrawTreemapAnimExiting(HDC dc, HWND hwnd, const RECT& area,
         if (!RectIntersects(rc, area)) continue;
 
         COLORREF col = ComputeBoxColor(tree.nodes[tr.node], MaxVal(1, tr.depth), style);
-        FillRectAlpha(dc, rc, col, alpha);
+        paint.FillAlpha(rc, col, alpha);
+    }
+}
+
+void PaintFrame(TreemapPaint& paint, HWND view, const RECT& area, const ss::Tree& tree,
+                const std::vector<TreemapBox>& boxes, const TreemapStyle& style,
+                const TreemapOverlay& overlay)
+{
+    if (const auto* animated = TreemapAnimCurrentBoxes(view)) {
+        DrawTreemap(paint, area, tree, *animated, style, Node::kNone, Node::kNone);
+        DrawTreemapAnimExiting(paint, view, area, tree, style);
+    } else {
+        DrawTreemap(paint, area, tree, boxes, style, overlay.hover, overlay.selected);
+        if (overlay.mouseX >= 0)
+            DrawTreemapTooltip(paint, area, tree, overlay.hover, overlay.mouseX, overlay.mouseY,
+                               style, overlay.showDateTime, overlay.showAge);
+    }
+}
+
+} // namespace
+
+void DrawTreemapFrame(HDC dc, HWND view, const RECT& area, const ss::Tree& tree,
+                      const std::vector<TreemapBox>& boxes, const TreemapStyle& style,
+                      const TreemapOverlay& overlay)
+{
+    if (!dc || RectW(area) <= 0 || RectH(area) <= 0) return;
+    int saved = SaveDC(dc);
+    if (!saved) return;
+    IntersectClipRect(dc, area.left, area.top, area.right, area.bottom);
+    SetBkMode(dc, TRANSPARENT);
+    GetGdiCache().EnsureFonts(dc, style.dpi > 0 ? style.dpi : 96, style.fontSize);
+    TreemapPaint paint{ dc };
+    PaintFrame(paint, view, area, tree, boxes, style, overlay);
+    RestoreDC(dc, saved);
+}
+
+TreemapRenderer::~TreemapRenderer()
+{
+    Reset();
+}
+
+void TreemapRenderer::Reset()
+{
+    if (brush_) brush_->Release();
+    if (target_) target_->Release();
+    brush_ = nullptr;
+    target_ = nullptr;
+}
+
+TreemapPresent TreemapRenderer::Draw(HWND canvas, HDC metrics, HWND view, const RECT& area,
+                                    const ss::Tree& tree, const std::vector<TreemapBox>& boxes,
+                                    const TreemapStyle& style, const TreemapOverlay& overlay)
+{
+    static const bool useGdi = [] {
+        wchar_t setting[2]{};
+        return GetEnvironmentVariableW(L"NEOSNIFFER_TREEMAP_GDI", setting, 2) == 1 && setting[0] == L'1';
+    }();
+    if (useGdi || !metrics || RectW(area) <= 0 || RectH(area) <= 0)
+        return TreemapPresent::Fallback;
+
+    GdiCache& cache = GetGdiCache();
+    cache.EnsureFonts(metrics, style.dpi > 0 ? style.dpi : 96, style.fontSize);
+    if (!cache.EnsureWriteFormats()) return TreemapPresent::Fallback;
+
+    auto size = D2D1::SizeU(RectW(area), RectH(area));
+    if (!target_) {
+        static auto factory = [] {
+            ID2D1Factory* ptr = nullptr;
+            D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &ptr);
+            return ComPtr<ID2D1Factory>(ptr);
+        }();
+        if (!factory) return TreemapPresent::Fallback;
+        // Layout and hit testing already use physical pixels.
+        auto props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_HARDWARE,
+            D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_IGNORE), 96.0f, 96.0f);
+        auto hwndProps = D2D1::HwndRenderTargetProperties(canvas, size, D2D1_PRESENT_OPTIONS_NONE);
+        if (FAILED(factory->CreateHwndRenderTarget(props, hwndProps, &target_)) ||
+            FAILED(target_->CreateSolidColorBrush(D2D1::ColorF(0), &brush_))) {
+            Reset();
+            return TreemapPresent::Fallback;
+        }
+        target_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
     }
 
-    if (saved) RestoreDC(dc, saved);
+    auto oldSize = target_->GetPixelSize();
+    if ((oldSize.width != size.width || oldSize.height != size.height) &&
+        FAILED(target_->Resize(size))) {
+        Reset();
+        return TreemapPresent::Fallback;
+    }
+    if (target_->CheckWindowState() & D2D1_WINDOW_STATE_OCCLUDED)
+        return TreemapPresent::Occluded;
+
+    target_->BeginDraw();
+    target_->SetTransform(D2D1::Matrix3x2F::Translation(-static_cast<float>(area.left),
+                                                       -static_cast<float>(area.top)));
+    TreemapPaint paint{ metrics, target_, brush_ };
+    PaintFrame(paint, view, area, tree, boxes, style, overlay);
+    if (FAILED(target_->EndDraw())) {
+        Reset();
+        return TreemapPresent::Fallback;
+    }
+    // Consume the previous present's occlusion result before the next pre-draw check.
+    return (target_->CheckWindowState() & D2D1_WINDOW_STATE_OCCLUDED)
+        ? TreemapPresent::Occluded : TreemapPresent::Presented;
 }
 
 } // namespace ss::ui

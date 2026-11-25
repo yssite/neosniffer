@@ -4,6 +4,9 @@
 #include <string>
 #include "core.h"
 
+struct ID2D1HwndRenderTarget;
+struct ID2D1SolidColorBrush;
+
 namespace ss::ui {
 
 struct TreemapBox                 // 由调用方算好（squarified 布局），只负责渲染
@@ -53,15 +56,39 @@ void LayoutTreemap(const ss::Tree& tree, uint32_t focusNode,
                    const TreemapLayoutOptions& opt,
                    std::vector<TreemapBox>& outBoxes);
 
-// 画树图：背景、每层填色、分隔线、标签（名字 + 大小）、悬停描边、选中描边、标签角标
-void DrawTreemap(HDC dc, const RECT& area, const ss::Tree& tree,
-                 const std::vector<TreemapBox>& boxes, const TreemapStyle& style,
-                 uint32_t hoverNode, uint32_t selectedNode);
+struct TreemapOverlay
+{
+    uint32_t hover = ss::Node::kNone;
+    uint32_t selected = ss::Node::kNone;
+    int mouseX = -1;
+    int mouseY = -1;
+    bool showDateTime = false;
+    bool showAge = false;
+};
 
-// 画悬浮提示卡片（在 area 内自动避让边缘），鼠标位置用 (mouseX, mouseY)
-void DrawTreemapTooltip(HDC dc, const RECT& area, const ss::Tree& tree, uint32_t node,
-                        int mouseX, int mouseY, const TreemapStyle& style,
-                        bool showDateTime, bool showAge);
+void DrawTreemapFrame(HDC dc, HWND view, const RECT& area, const ss::Tree& tree,
+                      const std::vector<TreemapBox>& boxes, const TreemapStyle& style,
+                      const TreemapOverlay& overlay);
+
+enum class TreemapPresent { Fallback, Occluded, Presented };
+
+class TreemapRenderer
+{
+public:
+    TreemapRenderer() = default;
+    ~TreemapRenderer();
+    TreemapRenderer(const TreemapRenderer&) = delete;
+    TreemapRenderer& operator=(const TreemapRenderer&) = delete;
+
+    TreemapPresent Draw(HWND canvas, HDC metrics, HWND view, const RECT& area,
+                         const ss::Tree& tree, const std::vector<TreemapBox>& boxes,
+                         const TreemapStyle& style, const TreemapOverlay& overlay);
+    void Reset();
+
+private:
+    ID2D1HwndRenderTarget* target_ = nullptr;
+    ID2D1SolidColorBrush* brush_ = nullptr;
+};
 
 // ----------------------------------------------------------------------------
 // 焦点缩放平滑动画接口（180ms ease-out，>3000 盒自动跳过，按 HWND 隔离多标签）
@@ -73,19 +100,15 @@ bool TreemapAnimStart(HWND hwnd, const ss::Tree& tree,
                       const RECT& layoutArea,
                       const std::vector<TreemapBox>& oldBoxes,
                       const std::vector<TreemapBox>& newBoxes,
-                      uint64_t nowMs, int durationMs = 180);
+                      double nowMs, int durationMs = 180);
 
-// 定时器驱动动画步进（建议 16ms）；返回 true 表示仍需继续，false 表示已结束并释放中间数据。
-bool TreemapAnimTick(HWND hwnd, uint64_t nowMs);
+// 绘制前按当前时间采样动画，返回是否还需下一帧。
+bool TreemapAnimTick(HWND hwnd, double nowMs);
 
 // 立即取消并释放指定窗口的动画中间数据（用于缩放/过滤/刷新/窗口销毁）。
 void TreemapAnimCancel(HWND hwnd);
 
 // 若指定窗口处于动画中，返回当前帧已插值的盒子数组指针；否则返回 nullptr。
 const std::vector<TreemapBox>* TreemapAnimCurrentBoxes(HWND hwnd);
-
-// 动画期间在主树图之上绘制正在向父矩形中心缩小淡出的旧节点（非动画态为空操作）。
-void DrawTreemapAnimExiting(HDC dc, HWND hwnd, const RECT& area,
-                            const ss::Tree& tree, const TreemapStyle& style);
 
 } // namespace ss::ui
